@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Project Haven: theme pitch</title>
+<style>body{background:#0f1a1c;color:#cfc8b8;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}</style></head>
+<body><p id="m">Loading the pitch…</p><script>
+const N=9;
+Promise.all(Array.from({length:N},(_,i)=>fetch('part'+String(i).padStart(2,'0')+'.txt').then(r=>{if(!r.ok)throw r.status;return r.arrayBuffer()})))
+.then(bs=>{const u=new Uint8Array(bs.reduce((a,b)=>a+b.byteLength,0));let o=0;for(const b of bs){u.set(new Uint8Array(b),o);o+=b.byteLength}
+const t=new TextDecoder('utf-8').decode(u);document.open();document.write(t);document.close();})
+.catch(e=>{document.getElementById('m').textContent='The pitch could not load. Please refresh.'});
+</script></body></html>
