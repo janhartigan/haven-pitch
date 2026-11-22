@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { buildRig } from './rig.js?v=20261121c';
-import { DEFS, ANIM } from './anims.js?v=20261121c';
+import { buildRig } from './rig.js?v=20261122a';
+import { DEFS, ANIM, MAP2 } from './anims.js?v=20261122a';
+import { buildRig2 } from './rig2.js?v=20261122a';
 
 const Q = new URLSearchParams(location.search);
 const R = 0.72, SQ3 = Math.sqrt(3);
@@ -13,12 +14,12 @@ const hexPos = (c, k) => new THREE.Vector3(1.5 * R * c, 0, SQ3 * R * (k + (Math.
 const CREW = [
   { id: 'ondra',  name: 'Ondra',  c: -4, k: 0, w: 1.75, lift: 0.45, idle: 'float', sway: 0.0, breath: 0.035 },
   { id: 'sill',   name: 'Sill',   c: -3, k: 0, h: 2.5, sway: 0.035, breath: 0.012 },
-  { id: 'hask',   name: 'Hask',   c: -2, k: 0, h: 1.25, sway: 0.006, breath: 0.012 },
-  { id: 'human',  name: 'Human',  c: -1, k: 0, h: 1.74, sway: 0.018, breath: 0.012 },
+  { id: 'hask',   name: 'Hask',   c: -2, k: 0, h: 1.1, tint: 1.5, sway: 0.006, breath: 0.012 },
+  { id: 'human',  name: 'Human',  c: -1, k: 0, h: 1.74, tint: 1.3, sway: 0.018, breath: 0.012 },
   { id: 'blathe', name: 'Blathe', c: 0,  k: 0, h: 1.15, sway: 0.014, breath: 0.03 },
   { id: 'tumble', name: 'Tumble', c: 1,  k: 0, h: 0.42, sway: 0.03, breath: 0.03, family: 5 },
   { id: 'vell',   name: 'Vell',   c: 2,  k: 0, h: 1.8, swarm: true },
-  { id: 'tiller', name: 'Tiller', c: 3,  k: 0, h: 1.55, sway: 0.01, breath: 0.014 },
+  { id: 'tiller', name: 'Tiller', c: 3,  k: 0, h: 1.2, tint: 2.0, sway: 0.01, breath: 0.014 },
 ];
 for (const m of CREW) { if (Q.has('yaw_' + m.id)) m.yawOverride = +Q.get('yaw_' + m.id); }
 
@@ -126,12 +127,60 @@ function addIdle(mat, m, phase) {
 
 const loader = new GLTFLoader();
 async function loadGLB(id) {
-  const txt = await (await fetch(`m/${id}.b64?v=20261121c`)).text();
+  const txt = await (await fetch(`m/${id}.b64?v=20261122a`)).text();
   const bin = Uint8Array.from(atob(txt.trim()), (c) => c.charCodeAt(0));
   return await new Promise((res, rej) => loader.parse(bin.buffer, '', res, rej));
 }
 
 const actors = [], pickables = [];
+// r4: auto-rigged characters. Keep the glTF skeleton; place/scale via a wrapper group (no geometry baking).
+async function build2(m, gl, g) {
+  const D = MAP2[m.id], root = gl.scene; root.updateMatrixWorld(true);
+  let sk = null; root.traverse((o) => { if (o.isSkinnedMesh) { sk = o; o.frustumCulled = false; } });
+  finishMesh(root, m);
+  const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  root.position.set(-c.x, -box.min.y, -c.z); root.updateMatrixWorld(true);
+  const map = { ...D.map }, legs = D.legs.map((L, i) => L.map((b, j) => { const k = 'g' + i + 'ulf'[j]; map[k] = b; return k; }));
+  const inst = new THREE.Group(); inst.add(root);
+  const sc = m.h / sz.y; inst.scale.setScalar(sc); g.add(inst); inst.updateMatrixWorld(true);
+  const rig = buildRig2(root, sk, map, legs, 11 + m.c * 3, sz.y); m.rigs = [rig]; m.size = sz.clone().multiplyScalar(sc); m.hh = sz.y;
+  if (D.sacs) addSacs(sk, D.sacs, rig);
+  if (m.id === 'tiller') await addRider(m, rig, sz.y);
+}
+// Blathe's throat sacs: inflate in the vertex shader before skinning (bind space), glow with inflation.
+function addSacs(sk, sacs, rig) {
+  const g = sk.geometry; g.computeBoundingBox(); const bb = g.boundingBox, h = bb.max.y - bb.min.y, cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2;
+  const C = sacs.map(([x, y, z, r]) => new THREE.Vector4(cx + x * h, bb.min.y + y * h, cz + z * h, r * h));
+  const U = { value: new THREE.Vector2(0, 0) }; rig.sacU = U; const force = Q.has('sac') ? +Q.get('sac') : -1;
+  const mat = sk.material;
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uSacA = { value: C[0] }; sh.uniforms.uSacB = { value: C[1] }; sh.uniforms.uInfl = force >= 0 ? { value: new THREE.Vector2(force, force) } : U;
+    sh.vertexShader = 'uniform vec4 uSacA, uSacB; uniform vec2 uInfl; varying float vSac;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      { vec3 dA = transformed - uSacA.xyz, dB = transformed - uSacB.xyz;
+        float fA = 1.0 - smoothstep(uSacA.w * 0.5, uSacA.w * 1.5, length(dA)), fB = 1.0 - smoothstep(uSacB.w * 0.5, uSacB.w * 1.5, length(dB));
+        transformed += dA * fA * uInfl.x * 0.9 + dB * fB * uInfl.y * 0.9; vSac = fA * (0.35 + uInfl.x) + fB * (0.35 + uInfl.y); }`);
+    sh.fragmentShader = 'varying float vSac;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += vec3(1.0, 0.5, 0.12) * vSac * 0.55;');
+  };
+  mat.needsUpdate = true;
+}
+// Tiller's rider is its own model with its own skeleton, carried in the sling pouch (child of the mount's chest bone).
+const RIDER = { x: 0.0, y: 0.952, z: 0.02, h: 0.27, pitch: 0.0, yaw: 0.0 };
+async function addRider(m, mount, H) {
+  const gl = await loadGLB('rider'), root = gl.scene; root.updateMatrixWorld(true);
+  let sk = null; root.traverse((o) => { if (o.isSkinnedMesh) { sk = o; o.frustumCulled = false; } });
+  finishMesh(root, { id: 'rider' });
+  const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  root.position.set(-c.x, -box.min.y, -c.z);
+  const holder = new THREE.Group(); holder.add(root);
+  const k = (RIDER.h * H) / sz.y;
+  const want = new THREE.Matrix4().compose(new THREE.Vector3(RIDER.x * H, RIDER.y * H, RIDER.z * H), new THREE.Quaternion().setFromEuler(new THREE.Euler(RIDER.pitch, RIDER.yaw, 0, 'YXZ')), new THREE.Vector3(k, k, k));
+  const chest = mount.B.chest; mount.frame.updateMatrixWorld(true);
+  const chestInFrame = new THREE.Matrix4().copy(mount.frame.matrixWorld).invert().multiply(chest.matrixWorld);
+  const local = chestInFrame.invert().multiply(want); local.decompose(holder.position, holder.quaternion, holder.scale);
+  chest.add(holder); holder.updateMatrixWorld(true);
+  const D = MAP2.rider, rig = buildRig2(root, sk, D.map, [], 97 + m.c, sz.y); rig.kind = 'rider'; mount.rider = rig;
+}
+
 function finishMesh(root, m) {
   root.traverse((o) => {
     if (!o.isMesh) return;
@@ -141,6 +190,7 @@ function finishMesh(root, m) {
     if (m.id === 'sill') { mat.transparent = true; mat.opacity = 0.9; mat.emissive = new THREE.Color(0x2a2418); mat.roughness = 0.3; }
     if (m.id === 'ondra') { mat.transparent = true; mat.opacity = 0.82; mat.depthWrite = false; mat.roughness = 0.35; mat.emissive = new THREE.Color(0x1a2230); mat.side = THREE.DoubleSide; }
     if (m.id === 'blathe') { mat.emissive = new THREE.Color(0x1c1004); }
+    if (m.tint) mat.color.setScalar(m.tint);
     o.material = mat;
   });
 }
@@ -225,6 +275,8 @@ async function build() {
     if (m.swarm) { g.add(makeVell(m)); m.size = new THREE.Vector3(0.7, m.h, 0.5); }
     else {
       const gl = await loadGLB(m.id);
+      if (MAP2[m.id]) { await build2(m, gl, g); }
+      else {
       const root = new THREE.Group(); gl.scene.updateMatrixWorld(true);
       const meshes = []; gl.scene.traverse((o) => { if (o.isMesh) meshes.push(o); });
       const toF32 = (g) => { for (const k of Object.keys(g.attributes)) { const a = g.attributes[k]; if (k === 'uv') continue;
@@ -255,6 +307,7 @@ async function build() {
       }
       m.size = sz.clone().multiplyScalar(sc);
       if (m.id === 'ondra') addOndraParts(g, root, sc);
+      }
       if (m.lift) g.position.y = m.lift;
       g.rotation.y = THREE.MathUtils.degToRad(m.yawOverride ?? 0);
     }
@@ -298,10 +351,10 @@ addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; cam
 
 const fbmA = (x) => Math.sin(x * 6.1) * 0.5 + Math.sin(x * 3.7 + 1.3) * 0.35 + Math.sin(x * 9.3 + 2.1) * 0.15;
 const clock = new THREE.Clock(); let simT = 0;
-const CAP = Q.has('cap');
+const CAP = Q.has('cap'), ORB = Q.has('orbit') ? +Q.get('orbit') : 0;
 function animate(dt) {
   simT += dt;
-  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
+  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.rider) ANIM.rider(r.rider, simT, dt); if (r.sacU && r.sac) r.sacU.value.set(r.sac[0], r.sac[1]); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
 }
 window.__step = (n, dt = 1 / 30) => { for (let i = 0; i < n; i++) { animate(dt); tick(simT); } renderer.render(scene, camera); };
 function frame() {
@@ -321,6 +374,7 @@ function tick(t) {
     if (m.group && m.group.userData.feelers) m.group.userData.feelers(t);
     if (m.idle === 'float') { m.group.position.y = m.lift + fbmA(t * 0.18) * 0.025; m.group.rotation.y = THREE.MathUtils.degToRad(m.yawOverride ?? 0) + fbmA(t * 0.07 + 5) * 0.35; m.group.rotation.z = fbmA(t * 0.15 + 9) * 0.05; m.group.rotation.x = fbmA(t * 0.13 + 2) * 0.04; }
   }
+  if (ORB && !tween) { const o = camera.position.clone().sub(controls.target), a = ORB * (1 / 30) * Math.PI / 180; o.applyAxisAngle(new THREE.Vector3(0, 1, 0), a); camera.position.copy(controls.target).add(o); }
   controls.update();
 }
 build().then(() => {

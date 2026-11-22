@@ -64,6 +64,20 @@ class Sched {
 function look(rig, yy, pp, rr, chain) { for (const [n, k] of chain) rig.rot(n, pp * k, yy * k, rr * k); }
 
 export const ANIM = {
+  rider(rig, t, dt) { // small passenger: quick curious looks, gill flutter, breathing
+    const s = init(rig, (s, z) => {
+      s.look = new Track(z + 1, { hold: [0.5, 1.6], trans: [0.12, 0.22], pick: (r) => [(r() - 0.5) * 1.6, (r() - 0.5) * 0.6, (r() - 0.5) * 0.6] });
+      s.fl = new Pulses(z + 2, { gap: [0.8, 2.2], dur: 0.35 }); s.hy = sp(170, 14); s.hp = sp(170, 14); s.g = sp(220, 9);
+    });
+    rig.reset();
+    const br = S(t * 2 * PI * 0.9 + rig.seed); rig.rot('spine', 0.04 * br, 0, 0);
+    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt);
+    rig.rot('spine', 0, yy * 0.3, 0); rig.rot('head', pp, yy * 0.7, L[2] * 0.6);
+    const f = s.g.step(s.fl.at(t).v, dt), w = 0.12 * S(t * 7.3) + 0.5 * f;
+    rig.rot('gillL', 0, 0, -w); rig.rot('gillR', 0, 0, w);
+    rig.rot('tail1', 0, 0.3 * S(t * 1.7), 0); rig.rot('tail2', 0, 0.4 * S(t * 1.7 - 0.8), 0);
+  },
+
   tumble(rig, t, dt) {
     const s = init(rig, (s, z) => {
       const k = (COUNT.tumble = (COUNT.tumble ?? -1) + 1) % 5; s.k = k;
@@ -136,7 +150,7 @@ export const ANIM = {
     const g = w.graze, L = s.look.at(t);
     const yy = s.hy.step(L[0] * (1 - g) + g * 0.45 * S(t * 0.8), dt), pp = s.hp.step(L[1] * (1 - g) + g * 0.6 + lift * 0.25 + shift * 0.15 - j * 0.3, dt), rr = s.hr.step(L[2], dt);
     rig.move('chest', 0, -0.035 * g, 0); rig.rot('chest', 0.1 * g, 0, 0);
-    look(rig, yy, pp, rr, [['neck', 0.5], ['head', 0.6]]);
+    look(rig, yy, pp, rr, rig.B.neck ? [['neck', 0.5], ['head', 0.6]] : [['head', 1.05]]);
     rig.solveIK();
   },
   tiller(rig, t, dt) {
@@ -224,6 +238,7 @@ export const ANIM = {
     });
     rig.reset();
     const br = S(t * 2 * PI * 0.15); rig.rot('chest', -0.02 * br, 0, 0);
+    if (rig.H) { rig.rot('AuL', 0, 0, 0.42); rig.rot('AuR', 0, 0, -0.42); rig.rot('AlL', 0, 0, 0.12); rig.rot('AlR', 0, 0, -0.12); } // auto-rig rest is an A-pose: arms down to the sides
     // slow sway from the hips, upper body counters like a reed
     const sw = s.sw.step(S(t * 2 * PI / 5.5 + 0.7) * 0.8 + fbm(t * 0.25, 3) * 0.4, dt);
     rig.move('pelvis', sw * 0.02, 0, 0); rig.rot('pelvis', 0, sw * 0.05, -sw * 0.085); rig.rot('spine', 0, 0, sw * 0.05); rig.rot('chest', 0, 0, sw * 0.06);
@@ -233,4 +248,16 @@ export const ANIM = {
     rig.rot('AlL', -0.12 + fbm(t * 0.25, 2) * 0.12, 0, 0); rig.rot('AlR', -0.12 + fbm(t * 0.25, 6) * 0.12, 0, 0);
     rig.solveIK();
   },
+};
+
+// ---------- r4: auto-rigged GLBs (UniRig skeleton + learned weights). Bone indices from tools/bones.mjs dumps.
+// L = character's right-hand side in mesh x<0 (matches the r1-r3 animators). legs order matches each animator's rig.legs use.
+export const MAP2 = {
+  hask:   { map: { pelvis: 0, spine: 1, chest: 2, head: 4, tail1: 19, tail2: 20 }, legs: [[10, 11, 12], [6, 7, 8], [16, 17, 18], [13, 14, 15]] },
+  human:  { map: { pelvis: 0, spine: [1, 2], chest: 3, neck: 4, head: 5, AuL: 14, AlL: 15, AuR: 7, AlR: 8 }, legs: [[24, 25, 26], [20, 21, 22]] },
+  sill:   { map: { pelvis: 0, spine: [1, 2], chest: 3, neck: 4, head: 5, AuL: 26, AlL: 27, AuR: 7, AlR: 8 }, legs: [[48, 49, 50], [44, 45, 46]] },
+  blathe: { map: { pelvis: 0, spine: [1, 2], chest: 3, neck: 4, head: 5, AuL: 26, AlL: 27, AuR: 7, AlR: 8 }, legs: [[48, 49, 50], [44, 45, 46]],
+            sacs: [[-0.12, 0.74, 0.13, 0.055], [0.12, 0.74, 0.13, 0.055]] },
+  rider:  { map: { pelvis: 0, spine: 1, head: 12, gillL: 14, gillR: 13, tail1: 22, tail2: 23 }, legs: [] },
+  tiller: { map: { pelvis: 0, spine: [5, 6, 7], chest: 8, neck: [9, 10, 11], head: 12, tail1: [1, 2, 3] }, legs: [[19, 20, 21], [15, 16, 17], [27, 28, 29], [23, 24, 25]] },
 };
