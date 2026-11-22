@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Willing · crew</title>
+<style>
+html,body{margin:0;height:100%;background:#0b0d10;color:#d9d4c7;font:14px/1.2 system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden}
+canvas{display:block}
+#names{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:94vw}
+#names button{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;height:34px;padding:0 14px;border-radius:17px;background:rgba(20,23,28,.72);border:1px solid rgba(217,212,199,.14);color:#cfc9bb;letter-spacing:.02em;backdrop-filter:blur(6px)}
+#names button:hover{border-color:rgba(232,190,120,.5);color:#f1e6cf}
+#names button.on{background:rgba(232,190,120,.16);border-color:rgba(232,190,120,.7);color:#f6ead2}
+#load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#8d877a;pointer-events:none;transition:opacity .6s}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<div id="load">Loading the crew…</div>
+<div id="names"></div>
+<script type="module" src="app.js?v=20261121a"></script>
+</body></html>
