@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { buildRig } from './rig.js?v=20261121b';
+import { DEFS, ANIM } from './anims.js?v=20261121b';
 
 const Q = new URLSearchParams(location.search);
 const R = 0.72, SQ3 = Math.sqrt(3);
@@ -54,7 +56,7 @@ key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02;
 scene.add(key);
 const rim = new THREE.DirectionalLight(0xa9bfe6, 0.9);
 rim.position.set(5, 6, -9); scene.add(rim);
-const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+const fill = new THREE.DirectionalLight(0xfff4e6, 0.8);
 fill.position.set(4, 3, 10); scene.add(fill);
 
 // ground: dusty painted-looking disc that fades into the dark
@@ -124,7 +126,7 @@ function addIdle(mat, m, phase) {
 
 const loader = new GLTFLoader();
 async function loadGLB(id) {
-  const txt = await (await fetch(`m/${id}.b64?v=20261121a`)).text();
+  const txt = await (await fetch(`m/${id}.b64?v=20261121b`)).text();
   const bin = Uint8Array.from(atob(txt.trim()), (c) => c.charCodeAt(0));
   return await new Promise((res, rej) => loader.parse(bin.buffer, '', res, rej));
 }
@@ -235,13 +237,21 @@ async function build() {
       const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3());
       const sc = m.w ? m.w / Math.max(sz.x, sz.z) : m.h / sz.y; m.hh = sz.y;
       const n = m.family || 1;
+      m.rigs = [];
       for (let i = 0; i < n; i++) {
-        const inst = n > 1 ? root.clone(true) : root, ph = i * 1.9;
-        inst.traverse((o) => { if (o.isMesh) { o.material = o.material.clone(); addIdle(o.material, m, ph); } });
+        let inst;
+        if (DEFS[m.id]) {
+          const src = meshes[0]; const rig = buildRig(src.geometry, src.material.clone(), DEFS[m.id], 11 + i * 7 + m.c * 3);
+          inst = new THREE.Group(); inst.add(rig.mesh); m.rigs.push(rig);
+          if (m.id === 'blathe') rig.lights = ['sacL', 'sacR'].map((n) => { const L = new THREE.PointLight(0xffa640, 0, 0.5, 2); L.position.set(n === 'sacL' ? -0.02 : 0.02, 0, 0.04); rig.B[n].add(L); return L; });
+        } else {
+          inst = n > 1 ? root.clone(true) : root; const ph = i * 1.9;
+          inst.traverse((o) => { if (o.isMesh) { o.material = o.material.clone(); addIdle(o.material, m, ph); } });
+        }
         const s = sc * (n > 1 ? [1.05, 0.92, 0.8, 0.86, 0.74][i] : 1);
         inst.scale.setScalar(s);
-        if (n > 1) { const a = i * 2.3 + 0.4, r = i ? 0.42 : 0.0; inst.position.set(Math.cos(a) * r, 0, Math.sin(a) * r * 0.9); inst.rotation.y = [0.2, -0.7, 0.9, 2.4, -2.0][i]; }
-        inst.userData.ph = ph; g.add(inst);
+        if (n > 1) { const o = [[0.02, 0.22], [-0.34, -0.06], [0.33, -0.02], [-0.12, -0.36], [0.2, -0.34]][i]; inst.position.set(o[0], 0, o[1]); inst.rotation.y = [0.15, -0.9, 0.8, -2.6, 2.3][i]; }
+        g.add(inst);
       }
       m.size = sz.clone().multiplyScalar(sc);
       if (m.id === 'ondra') addOndraParts(g, root, sc);
@@ -270,7 +280,7 @@ function focus(m, az, el) {
   for (const x of CREW) x.btn.classList.toggle('on', x === m); allBtn.classList.toggle('on', !m);
   let tgt, dist;
   if (!m) { tgt = new THREE.Vector3(-0.55, 0.75, 0.3); dist = 9.9; }
-  else { tgt = m.center.clone(); const ext = Math.max(m.size.y + (m.lift || 0) * 0.5, m.size.x, m.size.z); dist = Math.max(1.6, ext * 1.9 + 0.6); }
+  else { tgt = m.center.clone(); const ext = Math.max(m.size.y + (m.lift || 0) * 0.5, m.size.x, m.size.z); dist = Math.max(1.6, ext * 1.9 + 0.6) * (Q.has('zoom') ? +Q.get('zoom') : 1); }
   const dir = camera.position.clone().sub(controls.target).normalize();
   if (az !== undefined) { const a = THREE.MathUtils.degToRad(az), e = THREE.MathUtils.degToRad(el ?? 14); dir.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e)); }
   else if (dir.y < 0.12) { dir.y = 0.2; dir.normalize(); }
@@ -286,27 +296,36 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 });
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
-const clock = new THREE.Clock();
+const clock = new THREE.Clock(); let simT = 0;
+const CAP = Q.has('cap');
+function animate(dt) {
+  simT += dt;
+  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 1.6 * r.sac[i]; }); }
+}
+window.__step = (n, dt = 1 / 30) => { for (let i = 0; i < n; i++) { animate(dt); tick(simT); } renderer.render(scene, camera); };
 function frame() {
-  const t = clock.getElapsedTime(); uTime.value = t;
+  const dt = Math.min(clock.getDelta(), 1 / 20); animate(dt); tick(simT);
+  renderer.render(scene, camera); requestAnimationFrame(frame);
+}
+function tick(t) {
+  uTime.value = t;
   if (tween) {
-    const k = Math.min(1, (performance.now() - tween.t0) / tween.d), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const k = CAP ? 1 : Math.min(1, (performance.now() - tween.t0) / tween.d), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
     controls.target.lerpVectors(tween.fromT, tween.toT, e); camera.position.lerpVectors(tween.fromP, tween.toP, e);
     if (k >= 1) tween = null;
   }
-  hiMat.opacity += ((focused ? 0.55 + 0.15 * Math.sin(t * 2.2) : 0) - hiMat.opacity) * 0.1;
+  hiMat.opacity += ((focused && !Q.has('noui') ? 0.55 + 0.15 * Math.sin(t * 2.2) : 0) - hiMat.opacity) * 0.1;
   for (const m of actors) {
     if (m.swarm) m.group.children[0].userData.update(t);
     if (m.group && m.group.userData.feelers) m.group.userData.feelers(t);
     if (m.idle === 'float') { m.group.position.y = m.lift + Math.sin(t * 0.7) * 0.07; m.group.rotation.y = THREE.MathUtils.degToRad(m.yawOverride ?? 0) + Math.sin(t * 0.13) * 0.25; }
-    if (m.family) m.group.children.forEach((c, i) => { c.position.y = Math.max(0, Math.sin(t * 2.6 + i * 2.1) - 0.93) * 0.9; });
   }
-  controls.update(); renderer.render(scene, camera); requestAnimationFrame(frame);
+  controls.update();
 }
 build().then(() => {
   document.getElementById('load').style.opacity = 0;
   const f = Q.get('focus'); const m = CREW.find((x) => x.id === f);
   if (f || Q.has('az')) focus(m || null, Q.has('az') ? +Q.get('az') : undefined, Q.has('el') ? +Q.get('el') : undefined);
-  window.__ready = true;
+  window.__actors = actors; window.__ready = true;
 }).catch((e) => { document.getElementById('load').textContent = 'Could not load: ' + e.message; console.error(e); });
-frame();
+if (!CAP) frame();
