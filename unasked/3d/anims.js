@@ -47,157 +47,190 @@ export const DEFS = {
 };
 
 // ---------- animators: (rig, t, dt) ; rig.state persists springs/tracks ----------
+// r3 rules: no bone scaling on the spine chain (it pulsed the whole body), no sine Y offsets on pelvis/spine/chest,
+// feet pinned by IK. Motion lives in heads, necks, limbs, tails, ears. Every instance runs its own schedule.
 function init(rig, f) { if (!rig.state.ok) { f(rig.state, rig.seed); rig.state.ok = true; } return rig.state; }
 const sp = (k, d) => new Spring(k, d);
+const COUNT = {};
+// Action scheduler: cycles a per-instance list of [name, minDur, maxDur]; blend weights via springs (~0.4 s ease).
+class Sched {
+  constructor(seed, seq, names) { let x = Math.floor((Math.sin(seed * 91.7) * 0.5 + 0.5) * 1e6) + 1; this.r = () => ((x = (x * 16807) % 2147483647) / 2147483647);
+    this.seq = seq; this.k = 0; this.tEnd = this._dur(0); this.w = {}; this.sp = {}; for (const n of names) { this.w[n] = 0; this.sp[n] = new Spring(28, 10.5); } this.cur = seq[0][0]; }
+  _dur(k) { const a = this.seq[k % this.seq.length]; return a[1] + this.r() * (a[2] - a[1]); }
+  step(t, dt) { while (t > this.tEnd) { this.k++; this.tEnd += this._dur(this.k); } this.cur = this.seq[this.k % this.seq.length][0];
+    for (const n in this.sp) this.w[n] = Math.max(0, Math.min(1.05, this.sp[n].step(n === this.cur ? 1 : 0, dt))); return this.w; }
+}
+// distribute a look (yaw, pitch, roll) over a chain with springs already applied
+function look(rig, yy, pp, rr, chain) { for (const [n, k] of chain) rig.rot(n, pp * k, yy * k, rr * k); }
 
 export const ANIM = {
   tumble(rig, t, dt) {
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [0.8, 2.6], trans: [0.18, 0.35], pick: (r) => [(r() - 0.5) * 1.5, (r() - 0.6) * 0.5, (r() - 0.5) * 0.7] , start: [0, 0, 0] });
-      s.shift = new Track(z + 2, { hold: [1.5, 3.5], trans: [0.4, 0.7], pick: (r) => (r() - 0.5) * 2 });
-      s.sniff = new Pulses(z + 3, { gap: [2.5, 6], dur: 0.6 });
-      s.earL = new Pulses(z + 4, { gap: [1.5, 5], dur: 0.22 }); s.earR = new Pulses(z + 5, { gap: [1.8, 5.5], dur: 0.22 });
-      s.paw = new Pulses(z + 6, { gap: [5, 9], dur: 1.3 }); s.pawSide = 0;
-      s.hy = sp(140, 15); s.hp = sp(140, 15); s.ht = sp(110, 13); s.eL = sp(260, 12); s.eR = sp(260, 12);
-      s.t1 = sp(40, 6); s.t2 = sp(28, 4.5); s.t3 = sp(20, 3.5); s.rate = 0.85 + (z % 7) * 0.05;
-      s.bow = new Pulses(z + 7, { gap: [7, 13], dur: 2.2 });
+      const k = (COUNT.tumble = (COUNT.tumble ?? -1) + 1) % 5; s.k = k;
+      const SEQ = [
+        [['look', 5, 7], ['sniff', 3, 4], ['look', 3, 5], ['bow', 2.2, 2.6]],
+        [['sit', 6, 8], ['look', 3, 4], ['sniff', 3, 4]],
+        [['sniff', 6, 8], ['look', 2.5, 3.5], ['sit', 4, 5]],
+        [['scratch', 4.5, 5.5], ['sit', 2, 3], ['look', 3, 4]],
+        [['look', 1.2, 1.6], ['bow', 2.4, 2.8], ['look', 3, 4], ['sniff', 3, 4]],
+      ];
+      s.sch = new Sched(z, SEQ[k], ['look', 'sit', 'sniff', 'scratch', 'bow']);
+      s.look = new Track(z + 1, { hold: [0.6, 1.8], trans: [0.16, 0.3], pick: (r) => [(r() - 0.5) * 1.8, (r() - 0.55) * 0.6, (r() - 0.5) * 0.8], start: [0, 0, 0] });
+      s.earL = new Pulses(z + 4, { gap: [1.2, 3.5], dur: 0.2 }); s.earR = new Pulses(z + 5, { gap: [1.4, 4], dur: 0.2 });
+      s.hy = sp(150, 16); s.hp = sp(150, 16); s.ht = sp(120, 14); s.eL = sp(260, 11); s.eR = sp(260, 11);
+      s.t1 = sp(45, 6); s.t2 = sp(32, 4.5); s.t3 = sp(22, 3.2); s.rate = 0.9 + k * 0.045; s.side = k % 2 ? 1 : -1;
     });
-    t *= s.rate;
     rig.reset();
-    const br = S(t * 2 * PI * 0.75 + rig.seed);
-    rig.scale('chest', 1 + 0.035 * br, 1 + 0.025 * br, 1 + 0.02 * br);
-    const sh = s.shift.at(t);
-    const paw = s.paw.at(t), pawIdx = paw.i % 2 === 0 ? 0 : 1, pv = paw.v; // lift one front paw, curious
-    rig.move('pelvis', sh * 0.02, -Math.abs(sh) * 0.006 + 0.004 * br, 0); rig.rot('pelvis', 0, sh * 0.06, -sh * 0.05);
-    rig.move('chest', (pawIdx ? -1 : 1) * pv * 0.02, pv * 0.01, -pv * 0.01); rig.rot('chest', 0, sh * 0.08, sh * 0.04);
-    const L = s.look.at(t), sn = s.sniff.at(t);
-    const sniffNod = sn.v * (0.12 + 0.05 * S(t * 40)) ;
-    const yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt), tt = s.ht.step(L[2], dt);
-    rig.rot('neck', L[1] * 0.35, L[0] * 0.35, 0);
-    rig.rot('head', pp * 0.65 + sniffNod, yy * 0.65, tt);
-    // ears: perk toward motion, flick independently
-    const eSwing = (yy - L[0]) * 1.2;
-    const fl = s.earL.at(t).v, fr = s.earR.at(t).v;
-    rig.rot('earL', 0, 0, s.eL.step(-fl * 0.7 + eSwing * 0.3, dt)); rig.rot('earR', 0, 0, s.eR.step(fr * 0.7 + eSwing * 0.3, dt));
-    // tail: slow curl with follow-through down the chain
-    const base = fbm(t * 0.35, rig.seed) * 0.55 + sh * 0.25;
-    const lift = 0.15 + fbm(t * 0.2, rig.seed + 3) * 0.2;
+    const tt = t * s.rate, w = s.sch.step(t, dt);
+    const br = S(tt * 2 * PI * 0.6 + rig.seed);
+    rig.rot('chest', 0.03 * br, 0, 0);                                  // breathing as a tiny chest pitch, no scale
+    const sit = Math.min(1, w.sit + w.scratch), sn = w.sniff, bw = w.bow, lk = 0.45 + 0.55 * w.look + 0.3 * sit;
+    // sit: rump down, chest up, front legs straight (IK keeps paws planted)
+    rig.move('pelvis', 0, -0.15 * sit, 0.02 * sit); rig.rot('pelvis', -0.42 * sit, 0, 0); rig.rot('chest', 0.18 * sit, 0, 0);
+    // sniff ground: neck dives, nose twitches and sweeps
+    const nose = sn * (0.07 * S(tt * 26) * Math.max(0, S(tt * 2.1))) ;
+    rig.move('chest', 0, -0.05 * sn, 0.01 * sn); rig.rot('chest', 0.12 * sn, 0, 0);
+    rig.rot('neck', 0.75 * sn, 0.5 * sn * S(tt * 0.9 + s.k), 0); rig.rot('head', 0.35 * sn + nose, 0, 0);
+    // play-bow: chest dips, paws reach, rump up, tail wags fast
+    rig.move('chest', 0, -0.1 * bw, 0.03 * bw); rig.rot('chest', 0.2 * bw, 0, 0); rig.rot('pelvis', -0.1 * bw, 0, 0); rig.rot('head', -0.45 * bw, 0, 0.2 * bw);
+    if (bw > 0.01) { rig.legs[0].off.set(0, 0, 0.08 * bw); rig.legs[1].off.set(0, 0, 0.08 * bw); }
+    // look around (big, quick head turns with a little settle)
+    const L = s.look.at(tt), yy = s.hy.step(L[0] * lk * (1 - 0.6 * sn), dt), pp = s.hp.step(L[1] * lk * (1 - sn), dt), rr = s.ht.step(L[2] * lk, dt);
+    look(rig, yy, pp, rr, [['neck', 0.45], ['head', 0.6]]);
+    // scratch: hind paw up to the ear, fast strokes, head tilts into it
+    const sc = w.scratch, side = s.side, hl = rig.legs[side < 0 ? 2 : 3];
+    if (sc > 0.01) { const f = S(tt * 2 * PI * 5.5);
+      hl.off.set(side * 0.03 * sc, (0.27 + 0.035 * f) * sc, (0.2 + 0.03 * f) * sc);
+      rig.rot('head', 0.1 * sc, -side * 0.35 * sc, -side * 0.5 * sc); rig.rot('neck', 0, -side * 0.2 * sc, -side * 0.25 * sc); rig.rot('chest', 0, 0, side * 0.12 * sc); }
+    // ears: flick + swing against head turns, flatten while scratching
+    const eSwing = (yy - L[0] * lk) * 1.4, fl = s.earL.at(tt).v, fr = s.earR.at(tt).v;
+    rig.rot('earL', -0.4 * sc, 0, s.eL.step(-fl * 0.9 + eSwing * 0.4 - 0.5 * sc, dt)); rig.rot('earR', -0.4 * sc, 0, s.eR.step(fr * 0.9 + eSwing * 0.4 + 0.5 * sc, dt));
+    // tail: curl and sway with follow-through; fast wag in play-bow
+    const base = fbm(tt * 0.5, rig.seed) * 0.8 + bw * 0.55 * S(tt * 15) + sit * 0.4 * side;
+    const lift = 0.2 + fbm(tt * 0.3, rig.seed + 3) * 0.25 + bw * 0.5 - sit * 0.3;
     const a1 = s.t1.step(base, dt), a2 = s.t2.step(a1, dt), a3 = s.t3.step(a2, dt);
-    rig.rot('tail1', -lift, a1 * 0.6, 0); rig.rot('tail2', -lift * 0.8, a2 * 0.7, 0); rig.rot('tail3', -lift * 0.5, a3 * 0.9, 0);
-    // paw lift with IK target
-    const leg = rig.legs[pawIdx]; if (pv > 0) leg.off.set(0, pv * 0.09, pv * 0.04);
-    // play-bow stretch: chest dips, front paws reach, rump stays up, tail lifts
-    const bw = s.bow.at(t); if (bw.u >= 0 && pv === 0) {
-      const u = bw.u, e = u < 0.3 ? easeIO(u / 0.3) : u < 0.7 ? 1 : 1 - easeIO((u - 0.7) / 0.3);
-      rig.move('chest', 0, -0.11 * e, 0.02 * e); rig.rot('chest', 0.25 * e, 0, 0); rig.rot('pelvis', -0.12 * e, 0, 0);
-      rig.rot('head', -0.35 * e, 0, 0); rig.rot('tail1', -0.5 * e, 0, 0);
-      rig.legs[0].off.set(0, 0, 0.07 * e); rig.legs[1].off.set(0, 0, 0.07 * e);
-    }
+    rig.rot('tail1', -lift, a1 * 0.7, 0); rig.rot('tail2', -lift * 0.7, a2 * 0.8, 0); rig.rot('tail3', -lift * 0.4, a3 * 1.0, 0);
     rig.solveIK();
   },
   hask(rig, t, dt) {
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [2.5, 5], trans: [1.0, 1.6], pick: (r) => [(r() - 0.5) * 1.0, r() < 0.3 ? 0.4 : (r() - 0.6) * 0.4, (r() - 0.5) * 0.18] });
-      s.stamp = new Pulses(z + 2, { gap: [4.5, 8], dur: 1.6 }); s.hy = sp(30, 9); s.hp = sp(30, 9); s.jolt = sp(90, 7);
+      s.sch = new Sched(z, [['look', 2.5, 3.5], ['stamp', 2.2, 2.2], ['graze', 3.5, 5], ['look', 2, 3], ['stamp', 2.2, 2.2]], ['look', 'stamp', 'graze']);
+      s.look = new Track(z + 1, { hold: [1.4, 2.6], trans: [0.7, 1.0], pick: (r) => [(r() - 0.5) * 1.3, (r() - 0.6) * 0.35, (r() - 0.5) * 0.3] });
+      s.hy = sp(28, 9); s.hp = sp(28, 9); s.hr = sp(28, 9); s.jolt = sp(90, 7); s.t0 = -1; s.side = 1;
     });
     rig.reset();
-    const br = S(t * 2 * PI * 0.22);
-    rig.move('spine', 0, 0.01 * br, 0); rig.scale('spine', 1 + 0.018 * br, 1 + 0.03 * br, 1 + 0.008 * br);
-    const st = s.stamp.at(t), side = st.i % 2 ? 1 : -1; let u = st.u, lift = 0, shift = 0, impact = 0;
-    if (u >= 0) {
-      shift = u < 0.3 ? easeIO(u / 0.3) : u < 0.85 ? 1 : 1 - easeIO((u - 0.85) / 0.15);
-      lift = u < 0.3 ? 0 : u < 0.62 ? easeIO((u - 0.3) / 0.32) : u < 0.7 ? 1 - (u - 0.62) / 0.08 : 0;
-      impact = u >= 0.7 && u < 0.72 ? 1 : 0;
+    const w = s.sch.step(t, dt);
+    if (s.sch.cur === 'stamp' && s.t0 < 0) { s.t0 = t; s.side = -s.side; } if (s.sch.cur !== 'stamp') s.t0 = -1;
+    const br = S(t * 2 * PI * 0.2); rig.rot('chest', 0.025 * br, 0, 0); rig.rot('spine', -0.015 * br, 0, 0);
+    let shift = 0, lift = 0, impact = 0; const u = s.t0 >= 0 ? (t - s.t0) / 1.8 : -1, side = s.side;
+    if (u >= 0 && u <= 1) {
+      shift = u < 0.25 ? easeIO(u / 0.25) : u < 0.85 ? 1 : 1 - easeIO((u - 0.85) / 0.15);
+      lift = u < 0.25 ? 0 : u < 0.55 ? easeIO((u - 0.25) / 0.3) : u < 0.62 ? 1 - (u - 0.55) / 0.07 : 0;
+      impact = u >= 0.62 && u < 0.66 ? 1 : 0;
     }
     const j = s.jolt.step(impact ? -1 : 0, dt);
-    rig.move('chest', -side * shift * 0.035, j * 0.02 + lift * 0.012, 0); rig.rot('chest', 0, 0, side * shift * 0.07);
-    rig.move('pelvis', -side * shift * 0.012, 0, 0);
-    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1] + lift * 0.15 - j * 0.12, dt);
-    rig.rot('neck', pp * 0.5, yy * 0.5, L[2]); rig.rot('head', pp * 0.6, yy * 0.6, L[2] * 0.6);
-    const leg = rig.legs[side < 0 ? 1 : 0]; leg.off.set(0, lift * 0.1, lift * 0.03);
+    // weight onto the other three legs, then lift and slam the free front foot
+    rig.move('chest', -side * shift * 0.05, j * 0.025, 0); rig.rot('chest', 0, side * shift * 0.06, side * shift * 0.1); rig.move('pelvis', -side * shift * 0.02, 0, 0);
+    const leg = rig.legs[side < 0 ? 1 : 0]; leg.off.set(side * 0.02 * lift, lift * 0.2, lift * 0.06);
+    // head: low and heavy; grazing sweeps the snout along the ground
+    const g = w.graze, L = s.look.at(t);
+    const yy = s.hy.step(L[0] * (1 - g) + g * 0.45 * S(t * 0.8), dt), pp = s.hp.step(L[1] * (1 - g) + g * 0.6 + lift * 0.25 + shift * 0.15 - j * 0.3, dt), rr = s.hr.step(L[2], dt);
+    rig.move('chest', 0, -0.035 * g, 0); rig.rot('chest', 0.1 * g, 0, 0);
+    look(rig, yy, pp, rr, [['neck', 0.5], ['head', 0.6]]);
     rig.solveIK();
   },
   tiller(rig, t, dt) {
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [2, 4.5], trans: [0.7, 1.2], pick: (r) => [(r() - 0.5) * 0.9, r() < 0.4 ? 0.7 : (r() - 0.6) * 0.35, (r() - 0.5) * 0.2] });
-      s.toss = new Pulses(z + 7, { gap: [5, 9], dur: 0.9 });
-      s.shift = new Track(z + 2, { hold: [3, 6], trans: [0.9, 1.4], pick: (r) => (r() - 0.5) * 2 });
-      s.earL = new Pulses(z + 3, { gap: [2, 5], dur: 0.25 }); s.earR = new Pulses(z + 4, { gap: [2.5, 6], dur: 0.25 });
-      s.swish = new Pulses(z + 5, { gap: [3, 6], dur: 0.9 });
-      s.pilot = new Track(z + 6, { hold: [0.5, 1.8], trans: [0.12, 0.22], pick: (r) => [(r() - 0.5) * 1.8, (r() - 0.5) * 0.8, (r() - 0.5) * 0.7] });
-      s.hy = sp(35, 9); s.hp = sp(35, 9); s.t1 = sp(30, 4); s.py = sp(160, 12); s.pp = sp(160, 12);
+      s.sch = new Sched(z, [['alert', 1.0, 1.4], ['graze', 2.4, 3.0], ['alert', 2.4, 3.0], ['graze', 2.5, 3.5]], ['graze', 'alert']);
+      s.look = new Track(z + 1, { hold: [0.9, 2], trans: [0.35, 0.6], pick: (r) => [(r() < 0.5 ? -1 : 1) * (0.5 + r() * 0.5), (r() - 0.5) * 0.3, (r() - 0.5) * 0.4] });
+      s.toss = new Pulses(z + 7, { gap: [2.2, 4], dur: 0.9 });
+      s.shift = new Track(z + 2, { hold: [2.5, 4.5], trans: [0.8, 1.2], pick: (r, p) => (p > 0 ? -1 : 1) * (0.6 + r() * 0.4), start: 0.7 });
+      s.earL = new Pulses(z + 3, { gap: [1.2, 3], dur: 0.25 }); s.earR = new Pulses(z + 4, { gap: [1.5, 3.5], dur: 0.25 });
+      s.swish = new Pulses(z + 5, { gap: [1.8, 3.5], dur: 1.0 });
+      s.pilot = new Track(z + 6, { hold: [0.6, 1.6], trans: [0.12, 0.22], pick: (r) => [(r() - 0.5) * 2.2, (r() - 0.5) * 0.9, (r() - 0.5) * 0.9] });
+      s.hy = sp(45, 10); s.hp = sp(30, 9); s.t1 = sp(30, 4); s.py = sp(160, 12); s.pp = sp(160, 12);
     });
     rig.reset();
-    const br = S(t * 2 * PI * 0.3);
-    rig.scale('spine', 1 + 0.02 * br, 1 + 0.025 * br, 1); rig.move('spine', 0, 0.004 * br, 0);
+    const w = s.sch.step(t, dt), g = w.graze, a = w.alert;
+    const br = S(t * 2 * PI * 0.28); rig.rot('chest', 0.02 * br, 0, 0);
     const sh = s.shift.at(t);
-    rig.move('pelvis', sh * 0.018, 0, -sh * 0.02); rig.move('chest', sh * 0.014, -Math.abs(sh) * 0.006, -sh * 0.018); rig.rot('chest', 0, sh * 0.04, sh * 0.05);
-    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt);
-    const ts = s.toss.at(t), toss = ts.u >= 0 ? Math.sin(ts.u * PI * 3) * (1 - ts.u) * 0.35 : 0;
-    rig.rot('neck', pp * 0.55 + 0.03 * br - Math.abs(toss) * 0.3, yy * 0.45, L[2]); rig.rot('head', pp * 0.45, yy * 0.55 + toss, L[2] + toss * 0.5);
-    if (ts.u >= 0) { rig.rot('earL', 0, 0, -toss * 1.5); rig.rot('earR', 0, 0, -toss * 1.5); }
-    rig.rot('earL', 0, 0, -s.earL.at(t).v * 0.6); rig.rot('earR', 0, 0, s.earR.at(t).v * 0.6);
-    const sw = s.swish.at(t); const tail = s.t1.step(sw.v * (sw.i % 2 ? 1 : -1) * 0.9 + fbm(t * 0.4, rig.seed) * 0.15, dt);
-    rig.rot('tail1', 0, tail, 0);
-    const P = s.pilot.at(t); rig.rot('pilot', s.pp.step(P[1], dt) + S(t * 3.1) * 0.06, s.py.step(P[0], dt), P[2]); rig.move('pilot', 0, Math.max(0, S(t * 1.3)) * 0.015, 0);
+    rig.rot('chest', 0, -sh * 0.02, sh * 0.015);
+    // grazing: whole neck dips to the ground, chewing nods; alert: head high, quick looks, ears forward
+    const L = s.look.at(t), chew = g * 0.06 * S(t * 2 * PI * 1.6);
+    const ts = s.toss.at(t), toss = a * (ts.u >= 0 ? Math.sin(ts.u * PI * 3) * (1 - ts.u) * 0.45 : 0);
+    const yy = s.hy.step(L[0] * a + g * 0.25 * S(t * 0.6), dt), pp = s.hp.step(g * 1.05 - a * 0.25 + L[1] * a, dt);
+    rig.rot('chest', 0.04 * g, 0, 0);
+    rig.rot('neck', pp * 0.7 - Math.abs(toss) * 0.3, yy * 0.45, L[2] * a); rig.rot('head', pp * 0.4 + chew, yy * 0.55 + toss, L[2] * a + toss * 0.5);
+    rig.rot('earL', -0.3 * a, 0, -s.earL.at(t).v * 1.3 - toss * 1.5 + yy * 0.5); rig.rot('earR', -0.3 * a, 0, s.earR.at(t).v * 1.3 - toss * 1.5 + yy * 0.5);
+    const sw = s.swish.at(t); const tail = s.t1.step(sw.v * (sw.i % 2 ? 1 : -1) * 1.1 + fbm(t * 0.4, rig.seed) * 0.2, dt);
+    rig.rot('tail1', -0.1, tail, 0);
+    const P = s.pilot.at(t); rig.rot('pilot', s.pp.step(P[1], dt), s.py.step(P[0], dt), P[2]);
     rig.solveIK();
   },
   human(rig, t, dt) {
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [1.8, 4.5], trans: [0.45, 0.8], pick: (r) => [(r() - 0.5) * 1.4, (r() - 0.55) * 0.35, (r() - 0.5) * 0.2] });
-      s.shift = new Track(z + 2, { hold: [3, 6], trans: [1.0, 1.5], pick: (r, p) => (p > 0 ? -1 : 1) * (0.6 + r() * 0.4), start: 0.8 });
-      s.hy = sp(60, 11); s.hp = sp(60, 11); s.aL = sp(25, 5); s.aR = sp(25, 5); s.ch = sp(30, 7);
+      s.look = new Track(z + 1, { hold: [1.4, 3.2], trans: [0.4, 0.7], pick: (r) => [r() < 0.2 ? (r() < 0.5 ? -1 : 1) * 1.2 : (r() - 0.5) * 1.4, (r() - 0.55) * 0.4, (r() - 0.5) * 0.25] });
+      s.shift = new Track(z + 2, { hold: [2.2, 4], trans: [0.8, 1.2], pick: (r, p) => (p > 0 ? -1 : 1) * (0.7 + r() * 0.3), start: 0.85 });
+      s.hy = sp(70, 12); s.hp = sp(70, 12); s.cy = sp(14, 6); s.aL = sp(22, 4.5); s.aR = sp(22, 4.5); s.ch = sp(26, 7.5);
     });
     rig.reset();
-    const br = S(t * 2 * PI * 0.27);
-    rig.scale('chest', 1 + 0.015 * br, 1 + 0.01 * br, 1 + 0.025 * br); rig.move('chest', 0, 0.003 * br, 0);
+    const br = S(t * 2 * PI * 0.25);
+    rig.rot('chest', -0.025 * br, 0, 0); rig.rot('AuL', 0, 0, -0.03 * br); rig.rot('AuR', 0, 0, 0.03 * br);
+    // hip-to-hip: pelvis slides over the standing leg, hip hitches, spine and shoulders counter
     const sh = s.shift.at(t), ch = s.ch.step(sh, dt);
-    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt);
-    rig.move('pelvis', sh * 0.032, -Math.abs(sh) * 0.009, 0); rig.rot('pelvis', 0, sh * 0.07, -sh * 0.075);
-    rig.rot('spine', 0, -ch * 0.04 + yy * 0.08, ch * 0.055); rig.rot('chest', 0, -ch * 0.03 + yy * 0.12, ch * 0.04);
-    rig.rot('neck', pp * 0.4, yy * 0.3, L[2] * 0.5 - ch * 0.03); rig.rot('head', pp * 0.6, yy * 0.45, L[2] - ch * 0.04);
-    const aL = s.aL.step(-ch * 0.06, dt), aR = s.aR.step(-ch * 0.06, dt);
-    rig.rot('AuL', 0.02 * br, 0, aL - 0.02); rig.rot('AuR', 0.02 * br, 0, aR + 0.02);
-    rig.rot('AlL', -0.05 - 0.02 * br, 0, 0); rig.rot('AlR', -0.05 - 0.02 * br, 0, 0);
+    rig.move('pelvis', sh * 0.032, -Math.abs(sh) * 0.006, 0); rig.rot('pelvis', 0, sh * 0.08, -sh * 0.1);
+    rig.rot('spine', 0, 0, ch * 0.09); rig.rot('chest', 0, 0, ch * 0.05);
+    // looking around: eyes/head lead, chest follows slowly
+    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt), cy = s.cy.step(L[0], dt);
+    rig.rot('spine', 0, cy * 0.12, 0); rig.rot('chest', 0, cy * 0.18, 0);
+    rig.rot('neck', pp * 0.4, (yy - cy * 0.3) * 0.35, L[2] * 0.5 - ch * 0.04); rig.rot('head', pp * 0.6, (yy - cy * 0.3) * 0.55, L[2] - ch * 0.05);
+    // arms hang and lag the torso
+    const aL = s.aL.step(-ch * 0.12 - cy * 0.06, dt), aR = s.aR.step(-ch * 0.12 - cy * 0.06, dt);
+    rig.rot('AuL', 0.04 * S(t * 0.7) + aL * 0.4, 0, aL - 0.03); rig.rot('AuR', -0.04 * S(t * 0.7) - aR * 0.4, 0, aR + 0.03);
+    rig.rot('AlL', -0.12, 0, 0); rig.rot('AlR', -0.12, 0, 0);
     rig.solveIK();
   },
   blathe(rig, t, dt) {
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [1.5, 3.5], trans: [0.3, 0.55], pick: (r) => [(r() - 0.5) * 0.8, (r() - 0.5) * 0.3, (r() - 0.5) * 0.35] });
-      s.rock = new Track(z + 2, { hold: [1.2, 2.5], trans: [0.5, 0.8], pick: (r, p) => (p > 0 ? -1 : 1) * (0.5 + r() * 0.5), start: 0.6 });
-      s.talk = new Track(z + 3, { hold: [0.6, 2.2], trans: [0.15, 0.3], pick: (r) => (r() < 0.65 ? 1 : 0) });
-      s.hy = sp(80, 11); s.hp = sp(80, 11); s.sL = sp(180, 9); s.sR = sp(180, 9); s.aL = sp(30, 5); s.aR = sp(30, 5);
+      s.look = new Track(z + 1, { hold: [1.0, 2.6], trans: [0.25, 0.45], pick: (r) => [(r() - 0.5) * 1.3, (r() - 0.5) * 0.4, (r() - 0.5) * 0.5] });
+      s.rock = new Track(z + 2, { hold: [0.9, 1.8], trans: [0.45, 0.7], pick: (r, p) => (p > 0 ? -1 : 1) * (0.6 + r() * 0.4), start: 0.7 });
+      s.talk = new Track(z + 3, { hold: [0.8, 2.2], trans: [0.15, 0.3], pick: (r) => (r() < 0.7 ? 1 : 0), start: 1 });
+      s.gest = new Pulses(z + 4, { gap: [2.5, 4.5], dur: 1.4 });
+      s.hy = sp(80, 11); s.hp = sp(80, 11); s.sL = sp(140, 8); s.sR = sp(140, 8); s.aL = sp(30, 5); s.aR = sp(30, 5); s.big = sp(10, 5);
     });
     rig.reset();
-    const br = S(t * 2 * PI * 0.4);
-    rig.scale('spine', 1 + 0.03 * br, 1 + 0.012 * br, 1 + 0.04 * br);
+    const br = S(t * 2 * PI * 0.35);
+    rig.rot('chest', -0.03 * br, 0, 0);
     const rk = s.rock.at(t);
-    rig.move('pelvis', rk * 0.028, -Math.abs(rk) * 0.006, 0); rig.rot('pelvis', 0, rk * 0.04, -rk * 0.09); rig.rot('chest', 0, 0, rk * 0.05);
-    // muttering: syllable-like pulses through the throat sacs, slightly out of phase
-    const tk = s.talk.at(t), syl = Math.max(0, S(t * 9.3) * 0.6 + S(t * 5.7 + 1) * 0.4);
-    const sL = s.sL.step(tk * syl, dt), sR = s.sR.step(tk * Math.max(0, S(t * 9.3 - 0.7) * 0.6 + S(t * 6.1) * 0.4), dt);
-    rig.scale('sacL', 1 + 0.4 * sL, 1 + 0.35 * sL, 1 + 0.4 * sL); rig.scale('sacR', 1 + 0.4 * sR, 1 + 0.35 * sR, 1 + 0.4 * sR); rig.sac = [sL, sR];
-
-    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1] - tk * syl * 0.1, dt);
-    rig.rot('head', pp, yy, L[2] - rk * 0.03);
-    rig.rot('AuL', 0, 0, s.aL.step(-rk * 0.08, dt) - 0.02 * br); rig.rot('AuR', 0, 0, s.aR.step(-rk * 0.08, dt) + 0.02 * br);
+    rig.move('pelvis', rk * 0.01, 0, 0); rig.rot('pelvis', 0, rk * 0.03, -rk * 0.05); rig.rot('spine', 0, 0, rk * 0.03); rig.rot('chest', 0, 0, rk * 0.03);
+    // throat sacs: slow breath swell + muttered syllables; scaled up to ~1.8x, out of phase
+    const tk = s.talk.at(t), sylL = Math.max(0, S(t * 8.3) * 0.6 + S(t * 5.1 + 1) * 0.4), sylR = Math.max(0, S(t * 8.3 - 0.9) * 0.6 + S(t * 5.9) * 0.4);
+    const bigB = s.big.step(0.5 + 0.5 * br, dt);
+    const sL = s.sL.step(0.35 * bigB + tk * sylL * 0.65, dt), sR = s.sR.step(0.35 * bigB + tk * sylR * 0.65, dt);
+    rig.scale('sacL', 1 + 0.8 * sL, 1 + 0.65 * sL, 1 + 0.8 * sL); rig.scale('sacR', 1 + 0.8 * sR, 1 + 0.65 * sR, 1 + 0.8 * sR); rig.sac = [sL, sR];
+    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1] - tk * sylL * 0.12, dt);
+    rig.rot('head', pp, yy, L[2] - rk * 0.06);
+    // occasional gesture with one hand while muttering
+    const g = s.gest.at(t), gs = g.i % 2 ? 1 : 0, gv = g.v;
+    rig.rot('AuL', -(gs ? 0 : gv) * 0.15, 0, s.aL.step(-rk * 0.1, dt) - 0.04 * br - (gs ? 0 : gv) * 0.08);
+    rig.rot('AuR', -(gs ? gv : 0) * 0.15, 0, s.aR.step(-rk * 0.1, dt) + 0.04 * br + (gs ? gv : 0) * 0.08);
+    rig.rot('AlL', -(gs ? 0 : gv) * 0.5, 0, 0); rig.rot('AlR', -(gs ? gv : 0) * 0.5, 0, 0);
     rig.solveIK();
   },
   sill(rig, t, dt) {
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [2.5, 5.5], trans: [1.2, 1.8], pick: (r) => [(r() - 0.5) * 0.9, (r() - 0.5) * 0.3, (r() - 0.5) * 0.5] });
-      s.shift = new Track(z + 2, { hold: [3.5, 6], trans: [1.6, 2.2], pick: (r, p) => (p > 0 ? -1 : 1) * (0.6 + r() * 0.4), start: 0.7 });
-      s.hy = sp(20, 6); s.hp = sp(20, 6); s.ht = sp(20, 6); s.aL = sp(12, 3.2); s.aR = sp(12, 3.2);
+      s.look = new Track(z + 1, { hold: [1.8, 3.5], trans: [0.9, 1.4], pick: (r) => [(r() - 0.5) * 1.3, (r() - 0.5) * 0.35, (r() - 0.5) * 0.8] });
+      s.hy = sp(20, 6); s.hp = sp(20, 6); s.ht = sp(20, 6); s.aL = sp(10, 3); s.aR = sp(10, 3); s.sw = sp(8, 4);
     });
     rig.reset();
-    const br = S(t * 2 * PI * 0.16);
-    rig.scale('chest', 1 + 0.012 * br, 1 + 0.008 * br, 1 + 0.02 * br);
-    const sh = s.shift.at(t);
-    rig.move('pelvis', sh * 0.018, -Math.abs(sh) * 0.004, 0); rig.rot('pelvis', 0, sh * 0.03, -sh * 0.045); rig.rot('spine', 0, 0, sh * 0.035); rig.rot('chest', 0, sh * 0.06, sh * 0.03);
+    const br = S(t * 2 * PI * 0.15); rig.rot('chest', -0.02 * br, 0, 0);
+    // slow sway from the hips, upper body counters like a reed
+    const sw = s.sw.step(S(t * 2 * PI / 5.5 + 0.7) * 0.8 + fbm(t * 0.25, 3) * 0.4, dt);
+    rig.move('pelvis', sw * 0.02, 0, 0); rig.rot('pelvis', 0, sw * 0.05, -sw * 0.085); rig.rot('spine', 0, 0, sw * 0.05); rig.rot('chest', 0, 0, sw * 0.06);
     const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt), tl = s.ht.step(L[2], dt);
-    rig.rot('neck', pp * 0.5, yy * 0.4, tl * 0.4); rig.rot('head', pp * 0.5, yy * 0.6, tl * 0.6);
-    rig.rot('AuL', 0, 0, s.aL.step(-sh * 0.05 + fbm(t * 0.3, 4) * 0.04, dt)); rig.rot('AuR', 0, 0, s.aR.step(-sh * 0.05 + fbm(t * 0.3, 8) * 0.04, dt));
-    rig.rot('AlL', -0.08 + fbm(t * 0.25, 2) * 0.08, 0, 0); rig.rot('AlR', -0.08 + fbm(t * 0.25, 6) * 0.08, 0, 0);
+    rig.rot('neck', pp * 0.45, yy * 0.4, tl * 0.4 - sw * 0.05); rig.rot('head', pp * 0.55, yy * 0.6, tl * 0.6);
+    rig.rot('AuL', 0.08 * fbm(t * 0.3, 4), 0, s.aL.step(-sw * 0.12 + fbm(t * 0.3, 4) * 0.06, dt)); rig.rot('AuR', 0.08 * fbm(t * 0.3, 7), 0, s.aR.step(-sw * 0.12 + fbm(t * 0.3, 8) * 0.06, dt));
+    rig.rot('AlL', -0.12 + fbm(t * 0.25, 2) * 0.12, 0, 0); rig.rot('AlR', -0.12 + fbm(t * 0.25, 6) * 0.12, 0, 0);
     rig.solveIK();
   },
 };

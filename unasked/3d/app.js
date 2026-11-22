@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { buildRig } from './rig.js?v=20261121b';
-import { DEFS, ANIM } from './anims.js?v=20261121b';
+import { buildRig } from './rig.js?v=20261121c';
+import { DEFS, ANIM } from './anims.js?v=20261121c';
 
 const Q = new URLSearchParams(location.search);
 const R = 0.72, SQ3 = Math.sqrt(3);
@@ -126,7 +126,7 @@ function addIdle(mat, m, phase) {
 
 const loader = new GLTFLoader();
 async function loadGLB(id) {
-  const txt = await (await fetch(`m/${id}.b64?v=20261121b`)).text();
+  const txt = await (await fetch(`m/${id}.b64?v=20261121c`)).text();
   const bin = Uint8Array.from(atob(txt.trim()), (c) => c.charCodeAt(0));
   return await new Promise((res, rej) => loader.parse(bin.buffer, '', res, rej));
 }
@@ -296,11 +296,12 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 });
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
+const fbmA = (x) => Math.sin(x * 6.1) * 0.5 + Math.sin(x * 3.7 + 1.3) * 0.35 + Math.sin(x * 9.3 + 2.1) * 0.15;
 const clock = new THREE.Clock(); let simT = 0;
 const CAP = Q.has('cap');
 function animate(dt) {
   simT += dt;
-  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 1.6 * r.sac[i]; }); }
+  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
 }
 window.__step = (n, dt = 1 / 30) => { for (let i = 0; i < n; i++) { animate(dt); tick(simT); } renderer.render(scene, camera); };
 function frame() {
@@ -318,7 +319,7 @@ function tick(t) {
   for (const m of actors) {
     if (m.swarm) m.group.children[0].userData.update(t);
     if (m.group && m.group.userData.feelers) m.group.userData.feelers(t);
-    if (m.idle === 'float') { m.group.position.y = m.lift + Math.sin(t * 0.7) * 0.07; m.group.rotation.y = THREE.MathUtils.degToRad(m.yawOverride ?? 0) + Math.sin(t * 0.13) * 0.25; }
+    if (m.idle === 'float') { m.group.position.y = m.lift + fbmA(t * 0.18) * 0.025; m.group.rotation.y = THREE.MathUtils.degToRad(m.yawOverride ?? 0) + fbmA(t * 0.07 + 5) * 0.35; m.group.rotation.z = fbmA(t * 0.15 + 9) * 0.05; m.group.rotation.x = fbmA(t * 0.13 + 2) * 0.04; }
   }
   controls.update();
 }
