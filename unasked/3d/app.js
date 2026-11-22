@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { buildRig } from './rig.js?v=20261122a';
-import { DEFS, ANIM, MAP2 } from './anims.js?v=20261122a';
-import { buildRig2 } from './rig2.js?v=20261122a';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { buildRig } from './rig.js?v=20261122b';
+import { DEFS, ANIM, MAP2 } from './anims.js?v=20261122b';
+import { buildRig2 } from './rig2.js?v=20261122b';
 
 const Q = new URLSearchParams(location.search);
 const R = 0.72, SQ3 = Math.sqrt(3);
@@ -19,7 +20,7 @@ const CREW = [
   { id: 'blathe', name: 'Blathe', c: 0,  k: 0, h: 1.15, sway: 0.014, breath: 0.03 },
   { id: 'tumble', name: 'Tumble', c: 1,  k: 0, h: 0.42, sway: 0.03, breath: 0.03, family: 5 },
   { id: 'vell',   name: 'Vell',   c: 2,  k: 0, h: 1.8, swarm: true },
-  { id: 'tiller', name: 'Tiller', c: 3,  k: 0, h: 1.2, tint: 2.0, sway: 0.01, breath: 0.014 },
+  { id: 'tiller', name: 'Tiller', c: 3,  k: 0, h: 1.2, sway: 0.01, breath: 0.014 },
 ];
 for (const m of CREW) { if (Q.has('yaw_' + m.id)) m.yawOverride = +Q.get('yaw_' + m.id); }
 
@@ -127,7 +128,7 @@ function addIdle(mat, m, phase) {
 
 const loader = new GLTFLoader();
 async function loadGLB(id) {
-  const txt = await (await fetch(`m/${id}.b64?v=20261122a`)).text();
+  const txt = await (await fetch(`m/${id}.b64?v=20261122b`)).text();
   const bin = Uint8Array.from(atob(txt.trim()), (c) => c.charCodeAt(0));
   return await new Promise((res, rej) => loader.parse(bin.buffer, '', res, rej));
 }
@@ -145,6 +146,7 @@ async function build2(m, gl, g) {
   const sc = m.h / sz.y; inst.scale.setScalar(sc); g.add(inst); inst.updateMatrixWorld(true);
   const rig = buildRig2(root, sk, map, legs, 11 + m.c * 3, sz.y); m.rigs = [rig]; m.size = sz.clone().multiplyScalar(sc); m.hh = sz.y;
   if (D.sacs) addSacs(sk, D.sacs, rig);
+  if (m.id === 'sill') { addSillFrame(sk, sc); rig.organs = sk.userData.organs; }
   if (m.id === 'tiller') await addRider(m, rig, sz.y);
 }
 // Blathe's throat sacs: inflate in the vertex shader before skinning (bind space), glow with inflation.
@@ -163,8 +165,115 @@ function addSacs(sk, sacs, rig) {
   };
   mat.needsUpdate = true;
 }
+
+// r5 looks: bind-space unit-height coords (u) shared by the vertex/fragment hooks
+function unitUniforms(o) {
+  const g = o.geometry; g.computeBoundingBox(); const b = g.boundingBox, S = b.max.y - b.min.y;
+  return { uMin: { value: b.min.clone() }, uS: { value: S }, uHX: { value: (b.max.x - b.min.x) / (2 * S) }, uHZ: { value: (b.max.z - b.min.z) / (2 * S) } };
+}
+const UNIT_V = 'uniform vec3 uMin; uniform float uS, uHX, uHZ; varying vec3 vU;\n';
+const UNIT_B = 'vec3 u = (position - uMin) / uS; u.x -= uHX; u.z -= uHZ; vU = u;\n';
+const RIM = 'float fr = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.5);\n';
+const LOOK = {
+  // Tiller: concept mid-tone grey-brown, lighter muzzle and belly, darker dorsal saddle and feet; rounded back, rear spike smoothed
+  tiller(mat, o) {
+    const U = unitUniforms(o);
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, U);
+      sh.vertexShader = UNIT_V + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + UNIT_B + `
+        float zm = smoothstep(-0.86, -0.62, u.z) * (1.0 - smoothstep(0.5, 0.7, u.z));
+        float dy = 0.04 * max(0.0, 1.0 - pow(u.x / 0.29, 2.0)) * smoothstep(0.7, 0.93, u.y) * zm;
+        if (u.z < -0.76) { float t = (-0.76 - u.z) / 0.18; float cap = 0.93 - t * t * 0.1; if (u.y > cap) dy -= (u.y - cap) * 0.85; }
+        transformed.y += dy * uS;`);
+      sh.fragmentShader = 'varying vec3 vU;\n' + sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
+        { vec3 c = diffuseColor.rgb; float l = dot(c, vec3(0.299, 0.587, 0.114));
+          vec3 base = vec3(0.30, 0.245, 0.19);
+          c = mix(base * (0.45 + 4.5 * l), c * 2.4, 0.35);
+          float muz = smoothstep(0.7, 0.86, vU.z) * (1.0 - smoothstep(0.62, 0.82, vU.y));
+          float belly = (1.0 - smoothstep(0.38, 0.6, vU.y)) * step(0.2, vU.y);
+          float saddle = smoothstep(0.86, 0.98, vU.y) * (1.0 - smoothstep(0.55, 0.75, vU.z));
+          float feet = 1.0 - smoothstep(0.05, 0.13, vU.y);
+          c *= (1.0 + 0.45 * muz + 0.3 * belly) * (1.0 - 0.28 * saddle) * (1.0 - 0.4 * feet);
+          diffuseColor.rgb = c; }`);
+    };
+    mat.customProgramCacheKey = () => 'tiller5';
+  },
+  // rider: punchier blue/orange and a cool rim so it reads against the mount at board distance
+  rider(mat) {
+    mat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
+        { vec3 c = diffuseColor.rgb; float l = dot(c, vec3(0.299, 0.587, 0.114)); diffuseColor.rgb = max(vec3(0.0), mix(vec3(l), c, 1.6)) * 1.5; }`)
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + RIM + 'totalEmissiveRadiance += vec3(0.45, 0.75, 1.0) * fr * 0.7;');
+    };
+    mat.customProgramCacheKey = () => 'rider5';
+  },
+  // Sill: milky glass body, clear in the middle and dense at the edges, cool rim; brass frame and organs are separate geometry
+  sill(mat) {
+    mat.transparent = true; mat.depthWrite = false; mat.opacity = 1; mat.roughness = 0.15; mat.metalness = 0.0;
+    mat.color.setRGB(0.86, 0.92, 0.98); mat.emissive.setRGB(0.02, 0.025, 0.03);
+    mat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + RIM + 'totalEmissiveRadiance += vec3(0.08, 0.09, 0.1) + vec3(0.55, 0.7, 0.85) * fr * 0.4;')
+        .replace('#include <opaque_fragment>', 'diffuseColor.a = mix(0.42, 0.96, fr);\n#include <opaque_fragment>');
+    };
+    mat.customProgramCacheKey = () => 'sill5';
+  },
+};
+
+// Sill's brass frame: struts and bolted joints laid on the body surface, each strut carried by the bone it spans.
+function addSillFrame(sk, sc) {
+  const WS = new THREE.Matrix4().makeScale(sc, sc, sc);
+  const bones = sk.skeleton.bones, g = sk.geometry, n = g.attributes.position.count, V = [], t = new THREE.Vector3();
+  sk.updateWorldMatrix(true, true); for (let i = 0; i < n; i++) { sk.getVertexPosition(i, t); V.push(t.x, t.y, t.z); }
+  const bb = new THREE.Box3(); for (let i = 0; i < n; i++) bb.expandByPoint(t.set(V[3*i], V[3*i+1], V[3*i+2]));
+  const S = bb.max.y - bb.min.y, ox = (bb.min.x + bb.max.x) / 2, oz = (bb.min.z + bb.max.z) / 2, y0 = bb.min.y;
+  const U = (x, y, z) => new THREE.Vector3(ox + x * S, y0 + y * S, oz + z * S); // unit coords -> mesh space
+  const near = (fn) => { let best = null; for (let i = 0; i < n; i++) { const x = (V[3*i]-ox)/S, y = (V[3*i+1]-y0)/S, z = (V[3*i+2]-oz)/S; const v = fn(x, y, z); if (v !== null && (best === null || v > best)) best = v; } return best; };
+  // body centre-line of a leg at height y: mean x of verts in the slab on that side
+  const legAt = (side, y) => { let sx = 0, sz = 0, c = 0; for (let i = 0; i < n; i++) { const x = (V[3*i]-ox)/S, yy = (V[3*i+1]-y0)/S, z = (V[3*i+2]-oz)/S; if (Math.abs(yy - y) < 0.012 && x * side > 0.005 && Math.abs(x) < 0.15) { sx += x; sz += z; c++; } } return [sx / c, sz / c]; };
+  const front = (x, y) => near((vx, vy, vz) => (Math.abs(vx - x) < 0.012 && Math.abs(vy - y) < 0.015) ? vz : null);
+  const outer = (side, y, z) => near((vx, vy, vz) => (vx * side > 0 && Math.abs(vx) < 0.15 && Math.abs(vy - y) < 0.015 && Math.abs(vz - z) < 0.02) ? vx * side : null);
+  const brass = new THREE.MeshStandardMaterial({ color: 0xb8893e, metalness: 0.9, roughness: 0.32, emissive: 0x2a1a06 });
+  const R = 0.0042, J = 0.0072, out = -0.004;
+  const sk2 = sk; sk2.updateMatrixWorld(true);
+  const put = (mesh, bone) => { mesh.applyMatrix4(WS); mesh.updateMatrixWorld(true); bone.attach(mesh); }; // V = world / inst scale here (measured)
+  const strut = (a, b, bone, r = R) => { const d = new THREE.Vector3().subVectors(b, a), L = d.length();
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r * S, r * S, L, 8), brass); m.castShadow = true;
+    m.position.copy(a).add(b).multiplyScalar(0.5); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); put(m, bone); };
+  const joint = (p, bone) => { const m = new THREE.Mesh(new THREE.SphereGeometry(J * S, 12, 8), brass); m.position.copy(p); m.castShadow = true; put(m, bone);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(J * 1.25 * S, 0.0022 * S, 6, 16), brass); ring.position.copy(p); ring.lookAt(p.clone().add(new THREE.Vector3(0, 0, 1))); put(ring, bone); };
+  const legs = [[1, 44, 45, 46], [-1, 48, 49, 50]];
+  const hipY = 0.52, kneeY = 0.295, ankY = 0.06;
+  for (const [side, th, sh, ft] of legs) {
+    const P = {}; for (const [k, y] of [['h', hipY], ['k', kneeY], ['a', ankY], ['m1', 0.41], ['m2', 0.18]]) {
+      const [lx, lz] = legAt(side, y); const fz = front(lx, y) + out, oxx = (outer(side, y, lz) + out) * side;
+      P[k + 'f'] = U(lx, y, fz); P[k + 'o'] = U(oxx, y, lz + 0.004); }
+    strut(P.hf, P.kf, bones[th]); strut(P.kf, P.af, bones[sh]); strut(P.ho, P.ko, bones[th]); strut(P.ko, P.ao, bones[sh]);
+    strut(P.m1f, P.ko, bones[th], R * 0.8); strut(P.m2f, P.ko, bones[sh], R * 0.8);
+    joint(P.kf, bones[sh]); joint(P.ko, bones[sh]); joint(P.hf, bones[th]); joint(P.ao, bones[sh]); joint(P.af, bones[sh]);
+  }
+  // hip belt and torso uprights to the shoulders
+  const belt = []; for (const x of [-0.085, -0.045, 0, 0.045, 0.085]) belt.push(U(x, 0.545, front(x, 0.545) + out));
+  for (let i = 0; i < belt.length - 1; i++) strut(belt[i], belt[i + 1], bones[0]);
+  for (const side of [1, -1]) {
+    const pts = [0.545, 0.62, 0.7, 0.775].map((y) => { const x = side * (0.055 - (y - 0.545) * 0.05); return U(x, y, front(x, y) + out); });
+    for (let i = 0; i < pts.length - 1; i++) strut(pts[i], pts[i + 1], bones[[0, 1, 2][i]]);
+    joint(pts[0], bones[0]); joint(pts[3], bones[3]);
+    const sh = U(side * 0.03 + side * 0.0, 0.795, front(side * 0.03, 0.795) + out); strut(pts[3], sh, bones[3], R * 0.8);
+  }
+  // inner light: a few warm/cool organs inside the chest, seen through the glass
+  const cols = [0xffb450, 0x7fe0c0, 0xffd080, 0x9fd8ff, 0xffa040];
+  [[0.015, 0.72, -0.02, 0.018], [-0.02, 0.69, -0.015, 0.015], [0.0, 0.645, -0.02, 0.02], [0.025, 0.66, -0.025, 0.012], [-0.01, 0.6, -0.02, 0.014]].forEach(([x, y, z, r], i) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r * 0.6 * S, 12, 8), new THREE.MeshBasicMaterial({ color: cols[i], transparent: true, opacity: 0.7, depthWrite: false }));
+    m.position.copy(U(x, y, z)); m.userData.pulse = i; put(m, bones[3]); sk.userData.organs = (sk.userData.organs || []).concat(m); });
+  // sensor dots down the side of the head (concept), faintly lit
+  const dotM = new THREE.MeshBasicMaterial({ color: 0x1a1510 });
+  for (const side of [1, -1]) for (let i = 0; i < 5; i++) { const y = 0.955 - i * 0.012, z = 0.012;
+    const x = outer(side, y, z); if (x === null) continue; const d = new THREE.Mesh(new THREE.SphereGeometry(0.0042 * S, 8, 6), dotM); d.position.copy(U(side * (x - 0.001), y, z)); put(d, bones[5]); }
+}
+
 // Tiller's rider is its own model with its own skeleton, carried in the sling pouch (child of the mount's chest bone).
-const RIDER = { x: 0.0, y: 0.952, z: 0.02, h: 0.27, pitch: 0.0, yaw: 0.0 };
+const RIDER = { x: 0.0, y: 0.985, z: 0.04, h: 0.33, pitch: 0.0, yaw: 0.0 };
 async function addRider(m, mount, H) {
   const gl = await loadGLB('rider'), root = gl.scene; root.updateMatrixWorld(true);
   let sk = null; root.traverse((o) => { if (o.isSkinnedMesh) { sk = o; o.frustumCulled = false; } });
@@ -191,6 +300,7 @@ function finishMesh(root, m) {
     if (m.id === 'ondra') { mat.transparent = true; mat.opacity = 0.82; mat.depthWrite = false; mat.roughness = 0.35; mat.emissive = new THREE.Color(0x1a2230); mat.side = THREE.DoubleSide; }
     if (m.id === 'blathe') { mat.emissive = new THREE.Color(0x1c1004); }
     if (m.tint) mat.color.setScalar(m.tint);
+    if (o.isSkinnedMesh && LOOK[m.id]) LOOK[m.id](mat, o);
     o.material = mat;
   });
 }
@@ -230,36 +340,64 @@ function addOndraParts(g, root, sc) {
   };
 }
 
-// Vell: a swarm of finger-length gliders holding a polite person shape
+// Vell: a swarm of finger-length gliders holding a polite person shape.
+// r5: each glider has a body keel and bent wings that beat; oil-slick sheen; the swarm is dense at a shell
+// so the head, shoulders and robe-like taper read, with a thin halo of strays.
 function makeVell(m) {
-  const N = 5200, g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0.03, -0.028, 0, -0.006, 0, 0.004, -0.014, 0, 0, 0.03, 0, 0.004, -0.014, 0.028, 0, -0.006], 3));
+  const N = 4200;
+  // glider: keel (tetra-ish spindle) + two swept wings with dihedral; aW = wing-tip weight for the beat
+  const pos = [], w = [];
+  const tri = (a, b, c, wa, wb, wc) => { pos.push(...a, ...b, ...c); w.push(wa, wb, wc); };
+  const nose = [0, 0, 0.034], tail = [0, 0.002, -0.022], top = [0, 0.007, 0.004], bot = [0, -0.005, 0.006];
+  tri(nose, top, tail, 0, 0, 0); tri(nose, tail, bot, 0, 0, 0); tri(nose, bot, top, 0, 0, 0);
+  for (const sx of [1, -1]) { const root1 = [0, 0.003, 0.016], root2 = [0, 0.003, -0.012], tip = [sx * 0.036, 0.011, -0.01], mid = [sx * 0.018, 0.008, 0.008];
+    tri(root1, mid, root2, 0, 0.5, 0); tri(mid, tip, root2, 0.5, 1, 0); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('aW', new THREE.Float32BufferAttribute(w, 1));
   g.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.7, roughness: 0.3, side: THREE.DoubleSide });
+  const ph = new Float32Array(N), hue = new Float32Array(N);
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.75, roughness: 0.3, side: THREE.DoubleSide, envMapIntensity: 0.22 });
+  mat.envMap = VELL_ENV;
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uT = VELL_T;
+    sh.vertexShader = 'attribute float aW; attribute float aPh; attribute float aHue; uniform float uT; varying float vHue;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      vHue = aHue; transformed.y += aW * sin(uT * (9.0 + 5.0 * fract(aPh * 3.7)) + aPh) * 0.014;`);
+    sh.fragmentShader = 'varying float vHue;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      { float fr = 1.0 - abs(dot(normalize(normal), normalize(vViewPosition)));
+        vec3 iri = 0.5 + 0.5 * cos(6.2832 * (vHue + fr * 0.9 + vec3(0.0, 0.33, 0.67)));
+        totalEmissiveRadiance += iri * (0.012 + 0.12 * fr * fr * fr); }`);
+  };
+  mat.customProgramCacheKey = () => 'vell5';
   const im = new THREE.InstancedMesh(g, mat, N); im.castShadow = true;
-  const caps = [ // [x,y,z, x2,y2,z2, radius, weight]
-    [-0.11, 0.05, 0, -0.1, 0.85, 0, 0.08, 3], [0.11, 0.05, 0, 0.1, 0.85, 0, 0.08, 3],
-    [0, 0.9, 0, 0, 1.42, 0, 0.17, 6], [-0.25, 1.38, 0, -0.3, 0.8, 0.03, 0.055, 2], [0.25, 1.38, 0, 0.3, 0.8, 0.03, 0.055, 2],
-    [0, 1.55, 0, 0, 1.72, 0, 0.1, 2],
-  ];
-  const tot = caps.reduce((a, c) => a + c[7], 0);
+  // shape: radius profile (x, z) by height, head sphere, arms close to the body
+  const prof = [[0.0, 0.015, 0.012], [0.25, 0.07, 0.055], [0.6, 0.13, 0.09], [0.95, 0.16, 0.1], [1.2, 0.2, 0.115], [1.36, 0.23, 0.11], [1.42, 0.12, 0.08], [1.47, 0.055, 0.05]];
+  const rAt = (y) => { for (let i = 0; i < prof.length - 1; i++) { const [y0, a0, b0] = prof[i], [y1, a1, b1] = prof[i + 1]; if (y <= y1) { const t = (y - y0) / (y1 - y0); return [a0 + (a1 - a0) * t, b0 + (b1 - b0) * t]; } } return [0.05, 0.05]; };
   const P = [], col = new THREE.Color();
   let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   for (let i = 0; i < N; i++) {
-    let r = rnd() * tot, cp = caps[0]; for (const c of caps) { if ((r -= c[7]) <= 0) { cp = c; break; } }
-    const t = rnd(), a = rnd() * 6.283, rr = cp[6] * Math.sqrt(rnd());
-    const stray = rnd() < 0.09;
-    P.push({ x: cp[0] + (cp[3] - cp[0]) * t + Math.cos(a) * rr, y: cp[1] + (cp[4] - cp[1]) * t, z: cp[2] + (cp[5] - cp[2]) * t + Math.sin(a) * rr,
-      f: 0.6 + rnd() * 1.4, p: rnd() * 6.28, amp: stray ? 0.18 + rnd() * 0.25 : 0.015 + rnd() * 0.03, stray });
-    col.setHSL(0.52 + rnd() * 0.12, 0.08 + rnd() * 0.15, 0.04 + rnd() * 0.08); im.setColorAt(i, col);
+    const k = rnd(); let x, y, z;
+    const shell = 0.72 + 0.28 * Math.sqrt(rnd()); // most gliders sit near the surface so the silhouette reads
+    if (k < 0.13) { const a = rnd() * 6.283, b = Math.acos(2 * rnd() - 1), r = 0.105 * shell; y = 1.6 + Math.cos(b) * r * 1.15; x = Math.sin(b) * Math.cos(a) * r; z = Math.sin(b) * Math.sin(a) * r * 0.95; }
+    else if (k < 0.25) { const sd = rnd() < 0.5 ? 1 : -1, t = rnd(), a = rnd() * 6.283, r = 0.045 * shell; x = sd * (0.245 + 0.02 * t) + Math.cos(a) * r; y = 1.33 - 0.5 * t; z = 0.02 * t + Math.sin(a) * r; }
+    else { y = Math.pow(rnd(), 0.8) * 1.45; const [rx, rz] = rAt(y), a = rnd() * 6.283; x = Math.cos(a) * rx * shell; z = Math.sin(a) * rz * shell; }
+    const stray = rnd() < 0.07;
+    if (stray) { x *= 1.6 + rnd(); z *= 1.6 + rnd(); y += (rnd() - 0.5) * 0.3; }
+    // lower body frays: more motion near the ground
+    const fray = Math.max(0, 0.5 - y) * 0.12;
+    P.push({ x, y, z, f: 0.5 + rnd() * 1.2, p: rnd() * 6.28, amp: stray ? 0.12 + rnd() * 0.2 : 0.008 + rnd() * 0.02 + fray, stray, hd: Math.atan2(x, z) + Math.PI / 2 });
+    ph[i] = rnd() * 6.28; hue[i] = rnd();
+    const glint = rnd() < 0.05; if (glint) col.setHSL(0.11, 0.55, 0.5); else col.setHSL(0.55 + rnd() * 0.1, 0.08 + rnd() * 0.1, 0.07 + rnd() * 0.08);
+    im.setColorAt(i, col);
   }
+  g.setAttribute('aPh', new THREE.InstancedBufferAttribute(ph, 1)); g.setAttribute('aHue', new THREE.InstancedBufferAttribute(hue, 1));
   const s = m.h / 1.75, dummy = new THREE.Object3D();
   im.userData.update = (t) => {
+    VELL_T.value = t;
     for (let i = 0; i < N; i++) {
       const q = P[i], w = t * q.f + q.p;
       const dx = Math.sin(w) * q.amp, dz = Math.cos(w * 0.9) * q.amp, dy = Math.sin(w * 1.3) * q.amp * 0.5;
-      dummy.position.set((q.x + dx) * s, (q.y + dy + 0.01 * Math.sin(t * 1.7)) * s, (q.z + dz) * s);
-      dummy.rotation.set(Math.sin(w * 2.0) * 0.5, Math.atan2(Math.cos(w), -Math.sin(w * 0.9) * 0.9), Math.sin(w * 7.0) * 0.6);
+      dummy.position.set((q.x + dx) * s, (q.y + dy + 0.012 * Math.sin(t * 1.1)) * s, (q.z + dz) * s);
+      // gliders circle the body: heading tangent to the surface, banking with their wobble
+      dummy.rotation.set(Math.sin(w * 1.7) * 0.35, q.hd + Math.sin(w * 0.5) * 0.6, Math.sin(w * 2.3) * 0.5);
       dummy.updateMatrix(); im.setMatrixAt(i, dummy.matrix);
     }
     im.instanceMatrix.needsUpdate = true;
@@ -267,6 +405,8 @@ function makeVell(m) {
   im.frustumCulled = false;
   return im;
 }
+const VELL_T = { value: 0 };
+const VELL_ENV = (() => { const pm = new THREE.PMREMGenerator(renderer); const t = pm.fromScene(new RoomEnvironment(), 0.04).texture; pm.dispose(); return t; })();
 
 async function build() {
   const rs = await Promise.allSettled(CREW.map(async (m) => {
@@ -354,7 +494,7 @@ const clock = new THREE.Clock(); let simT = 0;
 const CAP = Q.has('cap'), ORB = Q.has('orbit') ? +Q.get('orbit') : 0;
 function animate(dt) {
   simT += dt;
-  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.rider) ANIM.rider(r.rider, simT, dt); if (r.sacU && r.sac) r.sacU.value.set(r.sac[0], r.sac[1]); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
+  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.rider) ANIM.rider(r.rider, simT, dt); if (r.organs) r.organs.forEach((o, i) => { o.material.opacity = 0.35 + 0.4 * (0.5 + 0.5 * Math.sin(simT * (0.9 + 0.23 * i) + i * 1.7)); }); if (r.sacU && r.sac) r.sacU.value.set(r.sac[0], r.sac[1]); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
 }
 window.__step = (n, dt = 1 / 30) => { for (let i = 0; i < n; i++) { animate(dt); tick(simT); } renderer.render(scene, camera); };
 function frame() {
