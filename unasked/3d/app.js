@@ -2,9 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { buildRig } from './rig.js?v=20261122c';
-import { DEFS, ANIM, MAP2 } from './anims.js?v=20261122c';
-import { buildRig2 } from './rig2.js?v=20261122c';
+import { buildRig } from './rig.js?v=20261122d';
+import { DEFS, ANIM, MAP2 } from './anims.js?v=20261122d';
+import { buildRig2 } from './rig2.js?v=20261122d';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 const Q = new URLSearchParams(location.search);
 const R = 0.72, SQ3 = Math.sqrt(3);
@@ -13,14 +14,14 @@ const hexPos = (c, k) => new THREE.Vector3(1.5 * R * c, 0, SQ3 * R * (k + (Math.
 
 // h = target height in metres (w = target width for floaters), yaw in degrees, lift = metres above ground
 const CREW = [
-  { id: 'ondra',  name: 'Ondra',  c: -4, k: 0, w: 1.75, lift: 0.45, idle: 'float', sway: 0.0, breath: 0.035 },
+  { id: 'ondra',  name: 'Ondra',  c: -5, k: 0, w: 1.75, lift: 0.45, idle: 'float', sway: 0.0, breath: 0.035 },
   { id: 'sill',   name: 'Sill',   c: -3, k: 0, h: 2.3, sway: 0.035, breath: 0.012 },
   { id: 'hask',   name: 'Hask',   c: -2, k: 0, h: 1.1, tint: 1.5, sway: 0.006, breath: 0.012 },
   { id: 'human',  name: 'Human',  c: -1, k: 0, h: 1.74, tint: 1.3, sway: 0.018, breath: 0.012 },
   { id: 'blathe', name: 'Blathe', c: 0,  k: 0, h: 1.15, sway: 0.014, breath: 0.03 },
-  { id: 'tumble', name: 'Tumble', c: 1,  k: 0, h: 0.42, sway: 0.03, breath: 0.03, family: 5 },
+  { id: 'tumble', name: 'Tumble', c: 1,  k: 0, h: 0.42, tint: 1.7, smooth: 1, sway: 0.03, breath: 0.03, family: 5 },
   { id: 'vell',   name: 'Vell',   c: 2,  k: 0, h: 1.8, swarm: true },
-  { id: 'tiller', name: 'Tiller', c: 3,  k: 0, h: 1.2, sway: 0.01, breath: 0.014 },
+  { id: 'tiller', name: 'Tiller', c: 3,  k: 0, h: 1.2, smooth: 1, sway: 0.01, breath: 0.014 },
 ];
 for (const m of CREW) { if (Q.has('yaw_' + m.id)) m.yawOverride = +Q.get('yaw_' + m.id); }
 
@@ -44,8 +45,8 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true; controls.dampingFactor = 0.08;
 controls.minDistance = 1.2; controls.maxDistance = 26;
 controls.maxPolarAngle = Math.PI * 0.49;
-controls.target.set(-0.55, 0.75, 0.3);
-camera.position.set(-0.55, 3.6, 9.4);
+controls.target.set(-1.25, 0.75, 0.3);
+camera.position.set(-1.25, 4.5, 12.0);
 
 // lights
 scene.add(new THREE.HemisphereLight(0xbcc6d6, 0x2a2219, 0.9));
@@ -77,14 +78,14 @@ function groundTex() {
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
 }
 const ground = new THREE.Mesh(new THREE.CircleGeometry(22, 96), new THREE.MeshStandardMaterial({ map: groundTex(), roughness: 1, metalness: 0 }));
-ground.rotation.x = -Math.PI / 2; ground.position.set(-0.55, 0, 0.3); ground.receiveShadow = true;
+ground.rotation.x = -Math.PI / 2; ground.position.set(-1.25, 0, 0.3); ground.receiveShadow = true;
 scene.add(ground);
 
 // subtle in-engine hex lines, fading with distance
 {
-  const pos = [], col = [], c0 = new THREE.Color(0xe9cf9f), center = new THREE.Vector3(-0.55, 0, 0.3);
-  for (let c = -7; c <= 6; c++) for (let k = -3; k <= 3; k++) {
-    const p = hexPos(c, k), d = p.distanceTo(center), a = Math.max(0, 1 - d / 5.2);
+  const pos = [], col = [], c0 = new THREE.Color(0xe9cf9f), center = new THREE.Vector3(-1.25, 0, 0.3);
+  for (let c = -9; c <= 6; c++) for (let k = -3; k <= 3; k++) {
+    const p = hexPos(c, k), d = Math.hypot((p.x - center.x) * 0.85, p.z - center.z), a = Math.max(0, 1 - d / 5.6);
     if (a <= 0.02) continue;
     for (let i = 0; i < 6; i++) {
       const a0 = i * Math.PI / 3, a1 = (i + 1) * Math.PI / 3, rr = R * 0.97;
@@ -128,7 +129,7 @@ function addIdle(mat, m, phase) {
 
 const loader = new GLTFLoader();
 async function loadGLB(id) {
-  const txt = await (await fetch(`m/${id}.b64?v=20261122c`)).text();
+  const txt = await (await fetch(`m/${id}.b64?v=20261122d`)).text();
   const bin = Uint8Array.from(atob(txt.trim()), (c) => c.charCodeAt(0));
   return await new Promise((res, rej) => loader.parse(bin.buffer, '', res, rej));
 }
@@ -136,18 +137,41 @@ async function loadGLB(id) {
 const actors = [], pickables = [];
 // r4: auto-rigged characters. Keep the glTF skeleton; place/scale via a wrapper group (no geometry baking).
 async function build2(m, gl, g) {
-  const D = MAP2[m.id], root = gl.scene; root.updateMatrixWorld(true);
-  let sk = null; root.traverse((o) => { if (o.isSkinnedMesh) { sk = o; o.frustumCulled = false; } });
-  finishMesh(root, m);
-  const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
-  root.position.set(-c.x, -box.min.y, -c.z); root.updateMatrixWorld(true);
-  const map = { ...D.map }, legs = D.legs.map((L, i) => L.map((b, j) => { const k = 'g' + i + 'ulf'[j]; map[k] = b; return k; }));
-  const inst = new THREE.Group(); inst.add(root);
-  const sc = m.h / sz.y; inst.scale.setScalar(sc); g.add(inst); inst.updateMatrixWorld(true);
-  const rig = buildRig2(root, sk, map, legs, 11 + m.c * 3, sz.y); m.rigs = [rig]; m.size = sz.clone().multiplyScalar(sc); m.hh = sz.y;
+  const D = MAP2[m.id], src = gl.scene; src.updateMatrixWorld(true);
+  src.traverse((o) => { if (o.isSkinnedMesh) { o.frustumCulled = false; if (m.smooth) smoothNormals(o.geometry); } });
+  finishMesh(src, m);
+  const nF = m.family || 1; m.rigs = []; let rig = null;
+  for (let i = 0; i < nF; i++) {
+    const root = i ? SkeletonUtils.clone(src) : src; root.updateMatrixWorld(true);
+    let sk = null; root.traverse((o) => { if (o.isSkinnedMesh) { sk = o; o.frustumCulled = false; } });
+    const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+    root.position.set(-c.x, -box.min.y, -c.z); root.updateMatrixWorld(true);
+    const map = { ...D.map }, legs = D.legs.map((L, j) => L.map((b, q) => { const k = 'g' + j + 'ulf'[q]; map[k] = b; return k; }));
+    const inst = new THREE.Group(); inst.add(root);
+    const sc = (m.h / sz.y) * (nF > 1 ? [1.05, 0.92, 0.8, 0.86, 0.74][i] : 1); inst.scale.setScalar(sc);
+    if (nF > 1) { const o = [[0.02, 0.22], [-0.34, -0.06], [0.33, -0.02], [-0.12, -0.36], [0.2, -0.34]][i]; inst.position.set(o[0], 0, o[1]); inst.rotation.y = [0.15, -0.9, 0.8, -2.6, 2.3][i]; }
+    g.add(inst); inst.updateMatrixWorld(true);
+    rig = buildRig2(root, sk, map, legs, 11 + i * 7 + m.c * 3, sz.y); m.rigs.push(rig);
+    if (!i) { m.size = sz.clone().multiplyScalar(m.h / sz.y); m.hh = sz.y; if (nF > 1) m.size.x = m.size.z = 1.0; }
+  }
+  const sk = rig.mesh, sz = new THREE.Vector3(0, m.hh, 0);
   if (D.sacs) addSacs(sk, D.sacs, rig);
   if (m.id === 'sill') rig.organs = addSillFrame(sk);
   if (m.id === 'tiller') { addPouch(rig, sz.y); await addRider(m, rig, sz.y); }
+}
+// r7: TRELLIS meshes are split at UV seams and carry faceted normals; average area-weighted face normals over welded positions
+function smoothNormals(g) {
+  const pa = g.attributes.position, n = pa.count, key = new Int32Array(n), map = new Map(); let k = 0;
+  for (let i = 0; i < n; i++) { const s = `${Math.round(pa.getX(i) * 1e4)},${Math.round(pa.getY(i) * 1e4)},${Math.round(pa.getZ(i) * 1e4)}`; if (!map.has(s)) map.set(s, k++); key[i] = map.get(s); }
+  const acc = new Float32Array(k * 3), I = g.index ? g.index.array : null, nt = I ? I.length / 3 : n / 3;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let t = 0; t < nt; t++) { const i0 = I ? I[3 * t] : 3 * t, i1 = I ? I[3 * t + 1] : 3 * t + 1, i2 = I ? I[3 * t + 2] : 3 * t + 2;
+    a.fromBufferAttribute(pa, i0); b.fromBufferAttribute(pa, i1); c.fromBufferAttribute(pa, i2); c.sub(b); b.sub(a); c.cross(b); // area-weighted
+    for (const i of [i0, i1, i2]) { acc[3 * key[i]] -= c.x; acc[3 * key[i] + 1] -= c.y; acc[3 * key[i] + 2] -= c.z; } }
+  const N = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { const j = key[i], l = Math.hypot(acc[3 * j], acc[3 * j + 1], acc[3 * j + 2]) || 1; N[3 * i] = acc[3 * j] / l; N[3 * i + 1] = acc[3 * j + 1] / l; N[3 * i + 2] = acc[3 * j + 2] / l; }
+  const old = g.attributes.normal; if (old) { let d = 0; for (let i = 0; i < Math.min(n, 2000); i++) d += N[3 * i] * old.getX(i) + N[3 * i + 1] * old.getY(i) + N[3 * i + 2] * old.getZ(i); if (d < 0) for (let i = 0; i < N.length; i++) N[i] = -N[i]; }
+  g.setAttribute('normal', new THREE.BufferAttribute(N, 3));
 }
 // Blathe's throat sacs: inflate in the vertex shader before skinning (bind space), glow with inflation.
 function addSacs(sk, sacs, rig) {
@@ -181,28 +205,27 @@ const LOOK = {
     mat.onBeforeCompile = (sh) => {
       Object.assign(sh.uniforms, U);
       sh.vertexShader = UNIT_V + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + UNIT_B + `
-        float zm = smoothstep(-0.86, -0.62, u.z) * (1.0 - smoothstep(0.5, 0.7, u.z));
-        float dy = 0.04 * max(0.0, 1.0 - pow(u.x / 0.29, 2.0)) * smoothstep(0.7, 0.93, u.y) * zm;
-        if (u.z < -0.76) { float t = (-0.76 - u.z) / 0.18; float cap = 0.93 - t * t * 0.1; if (u.y > cap) dy -= (u.y - cap) * 0.85; }
-        transformed.y += dy * uS;`);
+        `);
       sh.fragmentShader = 'varying vec3 vU;\n' + sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
         { vec3 c = diffuseColor.rgb; float l = dot(c, vec3(0.299, 0.587, 0.114));
+          float red = smoothstep(0.08, 0.2, c.r - max(c.g, c.b)); c = mix(c, vec3(l * 0.95, l * 0.85, l * 0.72), red);
           vec3 base = vec3(0.30, 0.245, 0.19);
-          c = mix(base * (0.45 + 4.5 * l), c * 2.4, 0.35);
-          float muz = smoothstep(0.7, 0.86, vU.z) * (1.0 - smoothstep(0.62, 0.82, vU.y));
+          c = mix(base * (0.4 + 3.6 * l), c * 2.0, 0.3);
+          float muz = smoothstep(0.6, 0.76, vU.z) * (1.0 - smoothstep(0.62, 0.82, vU.y));
           float belly = (1.0 - smoothstep(0.38, 0.6, vU.y)) * step(0.2, vU.y);
           float saddle = smoothstep(0.86, 0.98, vU.y) * (1.0 - smoothstep(0.55, 0.75, vU.z));
           float feet = 1.0 - smoothstep(0.05, 0.13, vU.y);
           c *= (1.0 + 0.45 * muz + 0.3 * belly) * (1.0 - 0.28 * saddle) * (1.0 - 0.4 * feet);
           diffuseColor.rgb = c; }`);
     };
-    mat.customProgramCacheKey = () => 'tiller5';
+    mat.customProgramCacheKey = () => 'tiller7';
   },
   // rider: punchier blue/orange and a cool rim so it reads against the mount at board distance
   rider(mat) {
     mat.onBeforeCompile = (sh) => {
       sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
-        { vec3 c = diffuseColor.rgb; float l = dot(c, vec3(0.299, 0.587, 0.114)); diffuseColor.rgb = max(vec3(0.0), mix(vec3(l), c, 1.6)) * 1.5; }`)
+        { vec3 c = diffuseColor.rgb; float l = dot(c, vec3(0.299, 0.587, 0.114));
+          float red = smoothstep(0.08, 0.2, c.r - max(c.g, c.b)); c = mix(c, vec3(l * 0.95, l * 0.85, l * 0.72), red); diffuseColor.rgb = max(vec3(0.0), mix(vec3(l), c, 1.6)) * 1.5; }`)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + RIM + 'totalEmissiveRadiance += vec3(0.45, 0.75, 1.0) * fr * 0.7;');
     };
     mat.customProgramCacheKey = () => 'rider5';
@@ -301,34 +324,81 @@ function addSillFrame(sk) {
 // Tiller's rider is its own model with its own skeleton, carried in the sling pouch (child of the mount's chest bone).
 // r6: the rider sits IN a leather pouch slung on the mount's left shoulder (concept), head and gills above the rim.
 // Unit-height coords of the mount (x<0 = its left). Shoulder surface there is |x| ~0.21 at y 0.55-0.75, z 0.35.
-const POUCH = { x: -0.29, y: 0.5, z: 0.37, r: 0.1, d: 0.2, sx: 0.8 };
-const RIDER = { x: -0.29, y: 0.62, z: 0.37, h: 0.2, pitch: -1.0, yaw: -0.2 }; // upright: tail down in the bag, head and gills out
+// r7 pouch: soft, slumped leather sack sitting against Tiller's left shoulder (bind-space units of mount height H)
+const POUCH = { x: -0.272, y: 0.41, z: 0.2, rx: 0.085, rz: 0.118, d: 0.25, flat: 0.05 };
+const RIDER = { h: 0.2, pitch: -1.12, yaw: 0.25, sink: 0.012 };
 function mountLocal(mount, M) { // matrix in mount frame space -> chest-bone space (both read from the same, freshly updated hierarchy)
   const chest = mount.B.chest; mount.frame.updateMatrixWorld(true);
   const chestInFrame = new THREE.Matrix4().copy(mount.frame.matrixWorld).invert().multiply(chest.matrixWorld);
   return chestInFrame.invert().multiply(M);
 }
+// parametric sack: a = angle around (0 = away from the body, PI/2 = front), v = 0 bottom .. 1 rim, plus a rolled lip
+function pouchPoint(a, v, P, H, shrink = 1) {
+  const ca = Math.cos(a), sa = Math.sin(a), lo = Math.min(1, v / 0.3);
+  // bag profile: round heavy bottom, widest low (~v 0.3), gathered narrower mouth
+  let f = Math.pow(Math.sin(lo * Math.PI / 2), 0.7) * (v > 0.3 ? 1.12 - 0.34 * Math.pow((v - 0.3) / 0.7, 1.4) : 1.12);
+  f *= 1 + 0.22 * (1 - v) * Math.max(0, ca) + 0.08 * Math.max(0, sa) * (1 - v);                 // heavy, slumped outer belly
+  f *= 1 + 0.05 * Math.sin(5 * a + v * 7) * 4 * v * (1 - v) + 0.025 * Math.sin(9 * a - 3 * v) * v; // leather creases
+  let x = -ca * P.rx * f * shrink, z = sa * P.rz * f * shrink;
+  if (x > P.flat) x = P.flat + (x - P.flat) * 0.15;                                                   // pressed flat against the body
+  let y = v * P.d - (v > 0.6 ? (v - 0.6) / 0.4 : 0) * (0.05 * (0.5 + 0.5 * ca) + 0.012 * Math.sin(2 * a + 1)); // rim sags outward
+  y -= 0.035 * (1 - v) * (1 - v) * (0.5 + 0.5 * ca);                                                  // bottom hangs lower on the outside
+  return [x * H, y * H, z * H];
+}
+function pouchGeo(P, H, shrink, lip) {
+  const NU = 40, NV = 16, pos = [], idx = [], vv = [], aa = [];
+  for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) { const a = i / NU * Math.PI * 2, v = j / NV; pos.push(...pouchPoint(a, v, P, H, shrink)); vv.push(v); aa.push(a); }
+  if (lip) for (const [dr, dy] of [[1.07, -0.004], [1.09, -0.016], [1.05, -0.026]]) for (let i = 0; i <= NU; i++) { const a = i / NU * Math.PI * 2, p = pouchPoint(a, 1, P, H, dr); p[1] += dy * H; pos.push(...p); vv.push(1); aa.push(a); }
+  const rows = NV + 1 + (lip ? 3 : 0);
+  for (let j = 0; j < rows - 1; j++) for (let i = 0; i < NU; i++) { const a = j * (NU + 1) + i, b = a + NU + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+  const col = []; for (let i = 0; i < vv.length; i++) { const a = aa[i], v = vv[i], cr = Math.sin(5 * a + v * 7) * 4 * v * (1 - v), k = 0.78 + 0.22 * v - 0.18 * Math.max(0, -cr) + 0.06 * Math.max(0, cr); col.push(k, k * 0.97, k * 0.93); }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals(); g.userData.base = Float32Array.from(pos); g.userData.v = vv; g.userData.a = aa; return g;
+}
 function addPouch(mount, H) {
-  const P = POUCH, prof = [[0.0, 0.0], [0.45, 0.02], [0.8, 0.12], [0.97, 0.3], [1.0, 0.55], [0.96, 0.85], [1.0, 1.0]].map(([r, y]) => new THREE.Vector2(r * P.r * H, y * P.d * H));
-  const leather = new THREE.MeshStandardMaterial({ color: 0x4e3424, roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
-  const inner = new THREE.MeshStandardMaterial({ color: 0x2a1810, roughness: 0.95, metalness: 0, side: THREE.BackSide });
-  const g = new THREE.Group();
-  const lumpy = (geo) => { const pa = geo.attributes.position; for (let i = 0; i < pa.count; i++) { const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i), a = Math.atan2(z, x), f = 1 + 0.07 * Math.sin(3 * a + y * 40) + 0.04 * Math.sin(5 * a - y * 25); pa.setXYZ(i, x * f, y - 0.012 * H * Math.cos(2 * a) * (y / (P.d * H)), z * f); } geo.computeVertexNormals(); return geo; };
-  const bag = new THREE.Mesh(lumpy(new THREE.LatheGeometry(prof, 32, 0, Math.PI * 2)), leather); bag.castShadow = true; g.add(bag);
-  const lin = new THREE.Mesh(lumpy(new THREE.LatheGeometry(prof.map((v) => new THREE.Vector2(v.x * 0.97, v.y)), 32)), inner); g.add(lin);
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(P.r * H * 1.0, 0.009 * H, 8, 28), new THREE.MeshStandardMaterial({ color: 0x3a2618, roughness: 0.8 })); rim.rotation.x = Math.PI / 2; rim.position.y = P.d * H; g.add(rim);
-  g.scale.set(P.sx, 1, 1);
-  const M = new THREE.Matrix4().compose(new THREE.Vector3(P.x * H, P.y * H, P.z * H), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1)).multiply(new THREE.Matrix4().makeScale(P.sx, 1, 1));
-  g.scale.set(1, 1, 1);
-  const holder = new THREE.Group(); holder.add(g); mountLocal(mount, M).decompose(holder.position, holder.quaternion, holder.scale);
-  // strap: from the rim, hugging the shoulder, over the withers (surface points measured on the mesh at z~0.35)
-  const SP = [[-0.2, 0.7, 0.37], [-0.212, 0.75, 0.36], [-0.185, 0.8, 0.35], [-0.172, 0.85, 0.35], [-0.152, 0.9, 0.35], [-0.09, 0.95, 0.35], [0.0, 0.975, 0.35]].map(([x, y, z]) => new THREE.Vector3(x * H, y * H, z * H));
+  const P = POUCH;
+  const leather = new THREE.MeshStandardMaterial({ color: 0x5c463a, roughness: 0.82, metalness: 0, side: THREE.FrontSide, vertexColors: true });
+  const inner = new THREE.MeshStandardMaterial({ color: 0x24140c, roughness: 0.95, metalness: 0, side: THREE.BackSide });
+  const bag = new THREE.Mesh(pouchGeo(P, H, 1, true), leather), lin = new THREE.Mesh(pouchGeo(P, H, 0.94, false), inner);
+  bag.castShadow = true; bag.receiveShadow = true;
+  // swing pivot = where the strap meets the rim on the body side; the sack hangs from it and sways
+  const pivot = new THREE.Group(), body = new THREE.Group(); pivot.add(body); body.add(bag, lin);
+  const piv = new THREE.Vector3(P.flat * H, P.d * H, 0); body.position.copy(piv).negate();
+  const M = new THREE.Matrix4().makeTranslation(P.x * H + piv.x, P.y * H + piv.y, P.z * H);
+  mountLocal(mount, M).decompose(pivot.position, pivot.quaternion, pivot.scale); pivot.userData.q0 = pivot.quaternion.clone();
+  // strap: from the rim's body side up over the withers, hugging the mesh surface (measured on the r7 mesh at z 0.25)
+  const SP = [[-0.232, 0.655, 0.2], [-0.222, 0.7, 0.2], [-0.198, 0.76, 0.2], [-0.17, 0.82, 0.2], [-0.152, 0.87, 0.2], [-0.114, 0.92, 0.2], [-0.074, 0.95, 0.2], [0.0, 0.965, 0.2]].map(([x, y, z]) => new THREE.Vector3(x * H, y * H, z * H));
   const sg = new THREE.Group();
-  for (let i = 0; i < SP.length - 1; i++) { const d = new THREE.Vector3().subVectors(SP[i + 1], SP[i]), m = new THREE.Mesh(new THREE.BoxGeometry(0.006 * H, d.length() * 1.04, 0.032 * H), leather);
-    m.position.copy(SP[i]).add(SP[i + 1]).multiplyScalar(0.5); const out = new THREE.Vector3(SP[i].x, SP[i].y - 0.6 * H, 0).normalize();
+  for (let i = 0; i < SP.length - 1; i++) { const d = new THREE.Vector3().subVectors(SP[i + 1], SP[i]), m = new THREE.Mesh(new THREE.BoxGeometry(0.007 * H, d.length() * 1.06, 0.03 * H), leather);
+    m.position.copy(SP[i]).add(SP[i + 1]).multiplyScalar(0.5);
     m.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(new THREE.Vector3(), d, new THREE.Vector3(0, 0, 1))); m.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0))); m.castShadow = true; sg.add(m); }
   const sh = new THREE.Group(); sh.add(sg); mountLocal(mount, new THREE.Matrix4()).decompose(sh.position, sh.quaternion, sh.scale);
-  for (const h of [holder, sh]) { h.traverse((o) => { o.userData.owner = 'tiller'; }); mount.B.chest.add(h); }
+  for (const h of [pivot, sh]) { h.traverse((o) => { o.userData.owner = 'tiller'; }); mount.B.chest.add(h); }
+  mount.pouch = { pivot, bag, lin, H, P, last: null, vel: new THREE.Vector3(), ang: new THREE.Vector2(), angV: new THREE.Vector2(), press: [0, 0] };
+}
+// world point of the rim at angle a (pouch-local, before grip deformation) -> used as the rider's hand targets
+function rimWorld(pc, a, inset = 0.9) { const p = pouchPoint(a, 1, pc.P, pc.H, inset); return pc.bag.localToWorld(new THREE.Vector3(p[0], p[1] + 0.004 * pc.H, p[2])); }
+const HAND_A = [Math.PI / 2 + 0.25, Math.PI / 2 - 0.55];   // rider's hands on the front rim: outer-front and body-front
+function updatePouch(mount, dt) {
+  const pc = mount.pouch; if (!pc) return; pc.pivot.updateMatrixWorld(true);
+  // secondary motion: the sack lags behind the chest's acceleration (spring about the strap pivot)
+  const wp = pc.pivot.getWorldPosition(new THREE.Vector3());
+  if (pc.last && dt > 0) { const v = wp.clone().sub(pc.last).divideScalar(dt), acc = v.clone().sub(pc.vel).divideScalar(dt); pc.vel.copy(v);
+    const inv = pc.pivot.getWorldQuaternion(new THREE.Quaternion()).invert(), aL = acc.applyQuaternion(inv);
+    const tx = THREE.MathUtils.clamp(aL.z * 0.05, -0.25, 0.25), tz = THREE.MathUtils.clamp(-aL.x * 0.05, -0.25, 0.25);
+    pc.angV.x += ((tx - pc.ang.x) * 60 - pc.angV.x * 7) * dt; pc.angV.y += ((tz - pc.ang.y) * 60 - pc.angV.y * 7) * dt;
+    pc.ang.x += pc.angV.x * dt; pc.ang.y += pc.angV.y * dt; }
+  pc.last = wp;
+  pc.pivot.quaternion.copy(pc.pivot.userData.q0).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(pc.ang.x, 0, Math.min(0.12, Math.max(-0.05, pc.ang.y)))));
+  // grip: the rim dents and dips under each hand, more when the rider pushes up
+  for (const mesh of [pc.bag, pc.lin]) {
+    const g = mesh.geometry, B = g.userData.base, V = g.userData.v, A = g.userData.a, pa = g.attributes.position;
+    for (let i = 0; i < pa.count; i++) { if (V[i] < 0.72) continue; let dy = 0, dr = 0;
+      for (let h = 0; h < 2; h++) { let da = Math.abs(A[i] - HAND_A[h]); da = Math.min(da, Math.PI * 2 - da); const w = Math.exp(-(da * da) / 0.09) * ((V[i] - 0.72) / 0.28) * pc.press[h]; dy -= 0.024 * w; dr -= 0.012 * w; }
+      const x = B[3 * i], z = B[3 * i + 2], r = Math.hypot(x, z) || 1; pa.setXYZ(i, x + x / r * dr * pc.H, B[3 * i + 1] + dy * pc.H, z + z / r * dr * pc.H); }
+    pa.needsUpdate = true; g.computeVertexNormals();
+  }
 }
 async function addRider(m, mount, H) {
   const gl = await loadGLB('rider'), root = gl.scene; root.updateMatrixWorld(true);
@@ -337,11 +407,18 @@ async function addRider(m, mount, H) {
   const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
   root.position.set(-c.x, -box.min.y, -c.z);
   const holder = new THREE.Group(); holder.add(root);
-  const k = (RIDER.h * H) / sz.y;
-  const want = new THREE.Matrix4().compose(new THREE.Vector3(RIDER.x * H, RIDER.y * H, RIDER.z * H), new THREE.Quaternion().setFromEuler(new THREE.Euler(RIDER.pitch, RIDER.yaw, 0, 'YXZ')), new THREE.Vector3(k, k, k));
+  const k = (RIDER.h * H) / sz.y, pc = mount.pouch;
+  // sit inside the sack: body axis tipped forward over the front rim; then slide so the shoulders sit just above the rim
+  const want = new THREE.Matrix4().compose(new THREE.Vector3(POUCH.x * H, (POUCH.y + 0.1) * H, POUCH.z * H), new THREE.Quaternion().setFromEuler(new THREE.Euler(RIDER.pitch, RIDER.yaw, 0, 'YXZ')), new THREE.Vector3(k, k, k));
   mountLocal(mount, want).decompose(holder.position, holder.quaternion, holder.scale);
   mount.B.chest.add(holder); holder.updateMatrixWorld(true);
-  const D = MAP2.rider, rig = buildRig2(root, sk, D.map, [], 97 + m.c, sz.y); rig.kind = 'rider'; mount.rider = rig;
+  const D = MAP2.rider, map = { ...D.map }; const legs = [[5, 6, 7], [9, 10, 11]].map((L, i) => L.map((b, j) => { const kk = 'h' + i + 'ulf'[j]; map[kk] = b; return kk; }));
+  const bones = sk.skeleton.bones, sh = bones[5].getWorldPosition(new THREE.Vector3()).add(bones[9].getWorldPosition(new THREE.Vector3())).multiplyScalar(0.5);
+  const rimC = pc.bag.localToWorld(new THREE.Vector3(0, (POUCH.d - RIDER.sink) * H, 0.01 * H));
+  const dW = rimC.sub(sh); const pInv = mount.B.chest.getWorldQuaternion(new THREE.Quaternion()).invert(), wsc = mount.B.chest.getWorldScale(new THREE.Vector3());
+  holder.position.add(dW.applyQuaternion(pInv).divide(wsc)); holder.updateMatrixWorld(true);
+  const rig = buildRig2(root, sk, map, legs, 97 + m.c, sz.y); rig.kind = 'rider'; mount.rider = rig; rig.mount = mount;
+  rig.hands = () => HAND_A.map((a) => root.worldToLocal(rimWorld(pc, a)));
 }
 
 function finishMesh(root, m) {
@@ -526,7 +603,7 @@ function focus(m, az, el) {
   focused = m;
   for (const x of CREW) x.btn.classList.toggle('on', x === m); allBtn.classList.toggle('on', !m);
   let tgt, dist;
-  if (!m) { tgt = new THREE.Vector3(-0.55, 0.75, 0.3); dist = 9.9; }
+  if (!m) { tgt = new THREE.Vector3(-1.25, 0.75, 0.3); dist = 12.6; }
   else { tgt = m.center.clone(); const ext = Math.max(m.size.y + (m.lift || 0) * 0.5, m.size.x, m.size.z); dist = Math.max(1.6, ext * 1.9 + 0.6) * (Q.has('zoom') ? +Q.get('zoom') : 1); }
   const dir = camera.position.clone().sub(controls.target).normalize();
   if (az !== undefined) { const a = THREE.MathUtils.degToRad(az), e = THREE.MathUtils.degToRad(el ?? 14); dir.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e)); }
@@ -548,7 +625,7 @@ const clock = new THREE.Clock(); let simT = 0;
 const CAP = Q.has('cap'), ORB = Q.has('orbit') ? +Q.get('orbit') : 0;
 function animate(dt) {
   simT += dt;
-  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.rider) ANIM.rider(r.rider, simT, dt); if (r.organs) r.organs.forEach((o, i) => { o.material.opacity = 0.35 + 0.35 * (0.5 + 0.5 * Math.sin(simT * (0.9 + 0.23 * i) + i * 1.7)); }); if (r.sacU && r.sac) r.sacU.value.set(r.sac[0], r.sac[1]); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
+  for (const m of actors) if (m.rigs) for (const r of m.rigs) { ANIM[m.id](r, simT, dt); if (r.pouch) { r.frame.updateMatrixWorld(true); updatePouch(r, dt); } if (r.rider) { r.frame.updateMatrixWorld(true); ANIM.rider(r.rider, simT, dt); if (r.pouch) r.pouch.press = r.rider.press || [0.5, 0.5]; } if (r.organs) r.organs.forEach((o, i) => { o.material.opacity = 0.35 + 0.35 * (0.5 + 0.5 * Math.sin(simT * (0.9 + 0.23 * i) + i * 1.7)); }); if (r.sacU && r.sac) r.sacU.value.set(r.sac[0], r.sac[1]); if (r.lights) r.lights.forEach((L, i) => { L.intensity = 0.25 + 0.3 * r.sac[i]; }); }
 }
 window.__step = (n, dt = 1 / 30) => { for (let i = 0; i < n; i++) { animate(dt); tick(simT); } renderer.render(scene, camera); };
 function frame() {

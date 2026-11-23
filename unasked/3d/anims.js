@@ -64,18 +64,28 @@ class Sched {
 function look(rig, yy, pp, rr, chain) { for (const [n, k] of chain) rig.rot(n, pp * k, yy * k, rr * k); }
 
 export const ANIM = {
-  rider(rig, t, dt) { // small passenger: quick curious looks, gill flutter, breathing
+  rider(rig, t, dt) { // small passenger in the pouch: hands grip the rim; shifts weight, leans on the rim, pushes up to peek around
     const s = init(rig, (s, z) => {
-      s.look = new Track(z + 1, { hold: [0.5, 1.6], trans: [0.12, 0.22], pick: (r) => [(r() - 0.5) * 1.6, (r() - 0.5) * 0.6, (r() - 0.5) * 0.6] });
-      s.fl = new Pulses(z + 2, { gap: [0.8, 2.2], dur: 0.35 }); s.hy = sp(170, 14); s.hp = sp(170, 14); s.g = sp(220, 9);
+      s.sch = new Sched(z, [['settle', 2.2, 3.4], ['lean', 2.0, 3.0], ['peek', 2.4, 3.4], ['settle', 1.6, 2.4], ['lean', 1.6, 2.4], ['shift', 1.8, 2.6], ['peek', 1.8, 2.6]], ['settle', 'lean', 'peek', 'shift']);
+      s.look = new Track(z + 1, { hold: [0.5, 1.5], trans: [0.12, 0.22], pick: (r) => [(r() - 0.5) * 1.8, (r() - 0.5) * 0.5, (r() - 0.5) * 0.4] });
+      s.side = new Track(z + 3, { hold: [1.6, 3.2], trans: [0.5, 0.8], pick: (r, p) => (p > 0 ? -1 : 1) * (0.5 + r() * 0.5), start: 0.6 });
+      s.fl = new Pulses(z + 2, { gap: [0.8, 2.2], dur: 0.35 }); s.hy = sp(170, 14); s.hp = sp(170, 14); s.g = sp(220, 9); s.up = sp(55, 11); s.ln = sp(40, 10); s.sd = sp(30, 9);
     });
     rig.reset();
-    const br = S(t * 2 * PI * 0.9 + rig.seed); rig.rot('spine', 0.04 * br, 0, 0);
-    const L = s.look.at(t), yy = s.hy.step(L[0], dt), pp = s.hp.step(L[1], dt);
-    rig.rot('spine', 0, yy * 0.3, 0); rig.rot('head', pp, yy * 0.7, L[2] * 0.6);
-    const f = s.g.step(s.fl.at(t).v, dt), w = 0.12 * S(t * 7.3) + 0.5 * f;
-    rig.rot('gillL', 0, 0, -w); rig.rot('gillR', 0, 0, w);
-    rig.rot('tail1', 0, 0.3 * S(t * 1.7), 0); rig.rot('tail2', 0, 0.4 * S(t * 1.7 - 0.8), 0);
+    const w = s.sch.step(t, dt), up = s.up.step(w.peek, dt), ln = s.ln.step(w.lean, dt), sd = s.sd.step(s.side.at(t) * (0.4 + w.shift), dt);
+    const br = S(t * 2 * PI * 0.9 + rig.seed);
+    // body: rises out of the sack on its arms (peek), sags forward onto the rim (lean), rocks hip to hip (shift)
+    rig.move('pelvis', 0.07 * sd, 0.02 * ln, 0.2 * up - 0.06 * ln + 0.01 * br);
+    rig.rot('spine', 0.04 * br + 0.3 * ln - 0.12 * up, 0.18 * sd, 0.1 * sd);
+    const L = s.look.at(t), k = 0.35 + 0.65 * up, yy = s.hy.step(L[0] * k, dt), pp = s.hp.step(L[1] * k - 0.35 * ln + 0.2 * up, dt);
+    rig.rot('head', pp, yy * 0.35, yy * 0.8 + L[2] * 0.3);
+    const f = s.g.step(s.fl.at(t).v, dt), gw = 0.12 * S(t * 7.3) + 0.5 * f + 0.3 * up;
+    rig.rot('gillL', 0, 0, -gw); rig.rot('gillR', 0, 0, gw);
+    rig.rot('tail1', 0, 0.2 * S(t * 1.3) + 0.2 * sd, 0); rig.rot('tail2', 0, 0.25 * S(t * 1.3 - 0.8), 0);
+    // hands pinned on the rim (IK); grip pressure drives the rim's dent
+    if (rig.hands) { const T = rig.hands(); rig.legs.forEach((Lg, i) => Lg.off.copy(T[i]).sub(Lg.rest).divideScalar(rig.H)); }
+    rig.press = [0, 1].map((i) => Math.max(0, 0.35 + 0.65 * up + 0.35 * ln + (i ? -1 : 1) * 0.3 * sd));
+    rig.solveIK();
   },
 
   tumble(rig, t, dt) {
@@ -253,11 +263,12 @@ export const ANIM = {
 // ---------- r4: auto-rigged GLBs (UniRig skeleton + learned weights). Bone indices from tools/bones.mjs dumps.
 // L = character's right-hand side in mesh x<0 (matches the r1-r3 animators). legs order matches each animator's rig.legs use.
 export const MAP2 = {
+  tumble: { map: { pelvis: 0, spine: [5, 6], chest: 7, neck: [8, 9], head: 10, earL: 12, earR: 13, tail1: [1, 2], tail2: 3, tail3: 4 }, legs: [[21, 22, 23], [16, 17, 18], [30, 31, 32], [26, 27, 28]] },
   hask:   { map: { pelvis: 0, spine: 1, chest: 2, head: 4, tail1: 19, tail2: 20 }, legs: [[10, 11, 12], [6, 7, 8], [16, 17, 18], [13, 14, 15]] },
   human:  { map: { pelvis: 0, spine: [1, 2], chest: 3, neck: 4, head: 5, AuL: 14, AlL: 15, AuR: 7, AlR: 8 }, legs: [[24, 25, 26], [20, 21, 22]] },
   sill:   { map: { pelvis: 0, spine: [1, 2], chest: 3, neck: 4, head: 5, AuL: 26, AlL: 27, AuR: 7, AlR: 8 }, legs: [[48, 49, 50], [44, 45, 46]] },
   blathe: { map: { pelvis: 0, spine: [1, 2], chest: 3, neck: 4, head: 5, AuL: 26, AlL: 27, AuR: 7, AlR: 8 }, legs: [[48, 49, 50], [44, 45, 46]],
             sacs: [[-0.12, 0.74, 0.13, 0.055], [0.12, 0.74, 0.13, 0.055]] },
   rider:  { map: { pelvis: 0, spine: 1, head: 12, gillL: 14, gillR: 13, tail1: 22, tail2: 23 }, legs: [] },
-  tiller: { map: { pelvis: 0, spine: [5, 6, 7], chest: 8, neck: [9, 10, 11], head: 12, tail1: [1, 2, 3] }, legs: [[19, 20, 21], [15, 16, 17], [27, 28, 29], [23, 24, 25]] },
+  tiller: { map: { pelvis: 0, spine: [5, 6, 7], chest: 8, neck: [9, 10, 11], head: 12, tail1: [1, 2] }, legs: [[19, 20, 21], [15, 16, 17], [27, 28, 29], [23, 24, 25]] },
 };
